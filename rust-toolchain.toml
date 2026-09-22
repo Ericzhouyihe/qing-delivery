@@ -1,0 +1,7 @@
+[toolchain]
+# 实测通过版本:rustc 1.97.1 (8bab26f4f 2026-07-14)。
+# 本机未安装 MSVC Build Tools,使用自带 mingw 的 windows-gnu 工具链完整构建;
+# TLS 走 native-tls(schannel),避免 aws-lc-rs 需要 NASM 的问题。
+# 详见 docs/deps-validation.md。要求:最低 1.85,以依赖 MSRV 为准。
+channel = "stable-x86_64-pc-windows-gnu"
+profile = "minimal"

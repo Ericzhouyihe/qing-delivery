@@ -1,0 +1,55 @@
+[package]
+name = "qing-delivery"
+version = "0.1.0"
+edition = "2024"
+description = "轻交付：闲鱼虚拟商品自动发货本地管理工具"
+license = "Apache-2.0"
+
+[dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs", "io-util", "process"] }
+axum = { version = "0.8.9", features = ["http1", "json", "tokio", "ws"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmpv = { version = "1", features = ["with-serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+argon2 = { version = "0.5", features = ["std"] }
+aes-gcm = { version = "0.10", features = ["std"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
+chromiumoxide = { version = "0.9.1", features = ["native-tls", "zip8"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+thiserror = "2"
+base64 = "0.22"
+md-5 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+url = "2"
+futures-util = "0.3"
+async-trait = "0.1"
+include_dir = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[features]
+default = []
+# 仅开发/测试构建：进程内模拟适配器、可控夹具与 dev 场景端点；正式发行禁止启用
+dev-fixtures = []
+
+[profile.release]
+lto = "thin"

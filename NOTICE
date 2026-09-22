@@ -1,0 +1,22 @@
+轻交付(qing-delivery)
+Copyright 2026 qing-delivery contributors
+
+本产品包含由第三方提供的软件组件:
+
+1. Rust 生态依赖(Tokio、Axum、rusqlite/SQLite、reqwest、tokio-tungstenite、
+   rmpv、serde、tracing、argon2、aes-gcm、windows-rs、chromiumoxide、clap、
+   uuid、rand、sha2、md-5、base64、chrono、hex、thiserror、futures-util、
+   include_dir、async-trait 等),各自遵循其开源许可证;完整清单见 Cargo.lock。
+
+2. 前端依赖(TypeScript、Vite、Vitest、jsdom),各自遵循其开源许可证;
+   完整清单见 frontend/package-lock.json。
+
+参考声明:
+- 本项目在需求研究阶段参考了 Ydisks-Xianyu-Helper
+  (https://github.com/Christ9038/Ydisks-Xianyu-Helper,本地核对版本
+  42a476fa8f325791509fbadae819984ae12fccfa,Apache-2.0)的**业务流程描述**
+  (付款发货、商品规格、异常补发等行为语义)。
+- 本仓库未复制该项目的实质代码、页面或测试夹具;参考目录
+  `Ydisks-Xianyu-Helper/` 被排除在 Git 跟踪、构建、测试与发行打包之外,
+  不构成运行时依赖。
+- 若未来移植其实质代码,必须按 Apache-2.0 保留原许可声明并在本文件追加条目。

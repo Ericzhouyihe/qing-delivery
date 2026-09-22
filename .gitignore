@@ -8,3 +8,22 @@
 .vscode
 .idea
 
+
+# Rust 构建产物(Cargo.lock 需提交,不入忽略)
+/target/
+
+# 前端
+/frontend/node_modules/
+/frontend/dist/
+
+# 嵌入式前端构建产物:入口占位页纳入版本控制,vite 产物目录忽略
+/src/webui/assets/
+
+# 本地运行与实验数据
+.work/
+*.log
+*.tmp
+
+# 环境与密钥
+.env*
+*.qdbak

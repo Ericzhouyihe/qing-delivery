@@ -1,0 +1,10 @@
+# 轻交付发行白名单(scripts/release.ps1 消费)
+# 规则:仅显式列出的路径允许进入发行目录;禁止递归打包整个仓库,
+# 禁止包含 Ydisks-Xianyu-Helper/、.git/、.work/、开发工具配置。
+# 行首 # 为注释;目录以 / 结尾表示整目录(仍受白名单内规则约束)。
+
+target/release/qing-delivery.exe
+README.md
+LICENSE
+NOTICE
+docs/release-notes.md
