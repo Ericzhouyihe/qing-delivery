@@ -1,2 +1,10 @@
 # 上游源码仅用于本地参考，不纳入轻交付仓库。
 /Ydisks-Xianyu-Helper/
+
+# 各种工具的
+.agents
+.zcode
+.claude
+.vscode
+.idea
+
