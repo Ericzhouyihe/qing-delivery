@@ -101,11 +101,11 @@
 
 ### Implementation for User Story 2
 
-- [ ] T041 [US2] 实现闲鱼扫码登录协议：二维码创建/轮询/确认（先对假重定向夹具，参考 R4 行为不做逐行迁移）、授权完成后核对账号身份一致才建账号，落在 `src/adapters/xianyu/auth/qr.rs`（FR-002）
+- [x] T041 [US2] 实现闲鱼扫码登录协议：二维码创建/轮询/确认（先对假重定向夹具，参考 R4 行为不做逐行迁移）、授权完成后核对账号身份一致才建账号，落在 `src/adapters/xianyu/auth/qr.rs`（FR-002）
 - [x] T042 [US2] 实现 auth_flows 应用与 HTTP：QrSession 状态机 `awaiting_scan → awaiting_authorization → authorized | expired | cancelled | failed | verification_required`、generation 绑定（取消/过期后迟到成功不覆盖新会话）、图片端点鉴权 no-store、每 3 秒轮询、cancel（已授权 409），落在 `src/application/accounts/qr.rs` 与 `src/transport/accounts.rs`
 - [x] T043 [US2] 实现凭证存储与代次：加密 Cookie Jar 保留完整 domain/path/有效期属性、credential_epoch 单调、迟到低代次更新拒绝、签名 Token 更新与登录会话续期区分，落在 `src/adapters/xianyu/auth/credentials.rs` 与 `src/adapters/sqlite/`
-- [ ] T044 [P] [US2] 实现 mtop 签名与续期：签名 data 与实际发送字节一致、签名 Token 过期/登录失效/需验证错误分类分离、Token 续期只受控重签只读请求（业务重试取决于提交证据而非新 Token），落在 `src/adapters/xianyu/mtop/`
-- [ ] T045 [US2] 实现 WS 连接生命周期：连接/注册/心跳、读泵不被详情或发送等待阻塞、帧 ACK 按原始帧一次且保留完整关联头（ACK ≠ 业务提交）、断线指数退避 2→60 秒带抖动且成功重置、验证/失效等待人工不紧密重连，落在 `src/adapters/xianyu/ws/client.rs`
+- [x] T044 [P] [US2] 实现 mtop 签名与续期：签名 data 与实际发送字节一致、签名 Token 过期/登录失效/需验证错误分类分离、Token 续期只受控重签只读请求（业务重试取决于提交证据而非新 Token），落在 `src/adapters/xianyu/mtop/`
+- [x] T045 [US2] 实现 WS 连接生命周期：连接/注册/心跳、读泵不被详情或发送等待阻塞、帧 ACK 按原始帧一次且保留完整关联头（ACK ≠ 业务提交）、断线指数退避 2→60 秒带抖动且成功重置、验证/失效等待人工不紧密重连，落在 `src/adapters/xianyu/ws/client.rs`
 - [x] T046 [P] [US2] 实现 sync 帧解码：Base64/MessagePack 大小/深度/条目数界限、整数键兼容、按原始顺序处理全部条目，落在 `src/adapters/xianyu/codec/`
 - [x] T047 [US2] 实现账号状态机与 supervisor：`connecting/online/offline/auth_expired/needs_verification` + paused（disabled 映射）、runtime_enabled（期望）与 status（观测）分离、每账号独立执行器（单账号故障不阻塞其他）、持久化失败 → storage_error 禁新动作，落在 `src/runtime/supervisor.rs`（FR-004）
 - [x] T048 [US2] 实现暂停屏障：先落库 control_epoch 再进执行器屏障；屏障完成前 UI 仅显示 pausing；未交出动作明确取消、已交出只跟踪结果；暂停超时仍为 pausing 不谎报生效，落在 `src/runtime/executor.rs` 与 `src/application/accounts/control.rs`（FR-023）
@@ -287,3 +287,12 @@ Task: "T038 非法事实 tests/integration/test_delivery_invalid_facts.rs"
 - 每任务或逻辑组提交一次；Checkpoint 处停下来独立验证故事
 - 实账号验证（T091）独立授权与标识，模拟通过不得表述为实单通过
 - 避免：模糊任务、同文件冲突、破坏故事独立性的跨故事依赖
+
+---
+
+## Phase 9: Convergence
+
+**Purpose**: 2026-09-23 收敛核查发现：应用层/HTTP/DB/测试真实存在，但 serve 二进制从未构造交付管道服务（T032/T047/T053 勾选失实），真实协议路径（T041/T044/T045，未勾选）与浏览器验证（T050/T051，未勾选）仍由未勾选任务跟踪、不在此重复
+
+- [x] T093 实现 serve 运行时编排并接线交付管道：在 `src/runtime/supervisor.rs` 建立账号运行时（事件通道→交付服务→恢复扫描循环，mock 与 live 共用构造），在 `src/main.rs` serve 启动序列（DB 线程之后、绑 HTTP 之前）构造 DeliveryService/ItemSyncService/CompensationService/TraceScanService/ManualService 并注入 AppState，manual_handle 按 profile 提供真实句柄；管理页面关闭后核心交付持续运行 per T019/T032/T047/T053、宪章 II（missing, CRITICAL）
+- [ ] T094 为真实协议路径提供确定性夹具：T041/T044/T045 完成后，以脱敏合成响应（generate.do/query.do/token 端点/reg/sync 帧）扩展 `tests/fixtures/`，使 live 协议代码可在无真实账号下测试 per 宪章 IV、quickstart V01/V02（missing, HIGH）

@@ -368,6 +368,12 @@ fn run_serve(args: ServeArgs) -> i32 {
         tracing::warn!(error = %e, "启动状态清理失败");
     }
 
+    // 运行时接线(T093):live 构造真实协议适配器并启动账号值守;
+    // mock(dev-fixtures)构造进程内假适配器。人工动作句柄与扫码驱动注入 AppState。
+    // build_runtime 内部 tokio::spawn,必须在 rt 上下文内构造(spawn 的任务随 rt 存活)
+    let (manual, authorization, item_sync, runtime_stop) =
+        rt.block_on(async { build_runtime(profile, db.clone(), &key) });
+
     let state = AppState::new(
         AdminAuth::new(db.clone()),
         JobService::new(db.clone()),
@@ -382,7 +388,9 @@ fn run_serve(args: ServeArgs) -> i32 {
                 key: key.key,
             },
         ),
-        manual_handle(profile),
+        manual,
+        authorization,
+        item_sync,
         ServeConfig::for_bind(bind, profile),
         key,
     );
@@ -416,10 +424,95 @@ fn run_serve(args: ServeArgs) -> i32 {
         })
         .await
         .expect("HTTP 服务异常退出");
-        // v1:尚无外部动作执行器;等待窗口保留给后续任务(执行器收尾≤15秒)
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // 运行时收尾:账号任务停止、已提交结果/未知保留(≤15 秒)
+        if let Some(stop) = runtime_stop {
+            stop.await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     });
     0
+}
+
+/// 按构造 profile:live = 真实协议 + 账号值守 + 扫码驱动 + 商品同步驱动;
+/// mock(dev-fixtures) = 假适配器 + 无值守。
+/// 返回(人工动作句柄, 扫码驱动, 商品同步驱动, 停止future)。
+#[allow(clippy::type_complexity)]
+fn build_runtime(
+    profile: qing_delivery::transport::state::ExecutionProfile,
+    db: DbThread,
+    key: &qing_delivery::adapters::windows::keys::DataKey,
+) -> (
+    Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
+    Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+) {
+    use qing_delivery::application::accounts::authorize::{AuthorizationService, QrDriver};
+    use qing_delivery::application::manual::actions::ManualOps;
+    use qing_delivery::runtime::supervisor;
+    match profile {
+        qing_delivery::transport::state::ExecutionProfile::Live => {
+            let adapter = qing_delivery::adapters::xianyu::adapter::XianyuAdapter::new();
+            let transport: std::sync::Arc<dyn supervisor::AccountTransport> =
+                std::sync::Arc::new(adapter.clone());
+            let handles =
+                supervisor::spawn(db.clone(), key.clone(), adapter.clone(), Some(transport));
+            let authz = AuthorizationService::new(db.clone(), key.clone(), adapter.clone());
+            authz.spawn();
+            let manual: std::sync::Arc<dyn ManualOps> = handles.manual.clone();
+            let item_sync: std::sync::Arc<
+                dyn qing_delivery::application::ports::platform::ItemSyncDriver,
+            > = std::sync::Arc::new(adapter);
+            let stop = async move {
+                handles.stop().await;
+            };
+            (
+                Some(manual),
+                Some(authz as std::sync::Arc<dyn QrDriver>),
+                Some(item_sync),
+                Some(Box::pin(stop)),
+            )
+        }
+        qing_delivery::transport::state::ExecutionProfile::Mock => build_mock_runtime(db, key),
+    }
+}
+
+#[cfg(feature = "dev-fixtures")]
+#[allow(clippy::type_complexity)]
+fn build_mock_runtime(
+    db: DbThread,
+    key: &qing_delivery::adapters::windows::keys::DataKey,
+) -> (
+    Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
+    Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+) {
+    use qing_delivery::application::manual::actions::ManualOps;
+    use qing_delivery::runtime::supervisor;
+    let adapter = qing_delivery::adapters::mock::fake::FakeAdapter::new();
+    let handles = supervisor::spawn(db.clone(), key.clone(), adapter, None);
+    let manual: std::sync::Arc<dyn ManualOps> = handles.manual.clone();
+    let stop = async move {
+        handles.stop().await;
+    };
+    (Some(manual), None, None, Some(Box::pin(stop)))
+}
+
+#[cfg(not(feature = "dev-fixtures"))]
+#[allow(clippy::type_complexity)]
+fn build_mock_runtime(
+    _db: DbThread,
+    _key: &qing_delivery::adapters::windows::keys::DataKey,
+) -> (
+    Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
+    Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+) {
+    // 无 dev-fixtures 的构建不可能进入 mock 分支(启动参数已拒绝)
+    (None, None, None, None)
 }
 
 fn check_profile_marker(data_dir: &DataDir, profile: ExecutionProfile) -> std::io::Result<()> {
@@ -438,13 +531,4 @@ fn check_profile_marker(data_dir: &DataDir, profile: ExecutionProfile) -> std::i
     let mut f = std::fs::File::create(&marker)?;
     f.write_all(wanted.as_bytes())?;
     f.sync_all()
-}
-
-/// live 构建在真实协议适配器接入(SC-091)前不提供人工动作句柄;
-/// mock/dev 构建挂接假适配器。返回 None 时端点明确报不可用,不伪成功。
-fn manual_handle(
-    _profile: qing_delivery::transport::state::ExecutionProfile,
-) -> Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>> {
-    // dev-fixtures 构建中由场景服务构造;此处统一返回 None 保持明确性
-    None
 }

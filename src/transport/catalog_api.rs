@@ -308,8 +308,139 @@ pub async fn start_item_sync(
             "mock 同步经 /dev/scenarios 驱动",
         );
     }
-    err_shared(
-        ErrorCode::UnsupportedCapability,
-        &format!("账号 {account_id}:真实平台同步待 US2 协议接入(SC-091),不伪成功"),
+    // live:经 ItemSyncDriver 真实拉取在售商品并入库;任务句柄可查询,失败如实标注
+    let Some(driver) = state.inner.item_sync.clone() else {
+        return err_shared(
+            ErrorCode::UnsupportedCapability,
+            "当前构建未接入商品同步驱动(live 协议接入前不伪成功)",
+        );
+    };
+    let job = match state
+        .inner
+        .jobs
+        .create("item_sync", Some(&account_id))
+        .await
+    {
+        Ok(j) => j,
+        Err(_) => return err_shared(ErrorCode::PersistenceUnavailable, "任务服务不可用"),
+    };
+    let db = state.inner.db.clone();
+    let job_id = job.id.clone();
+    let job_version = job.version;
+    let account = account_id.clone();
+    tokio::spawn(async move {
+        use crate::application::ports::platform::RequestContext;
+        let mut cursor: Option<String> = None;
+        let mut added = 0i64;
+        let mut updated = 0i64;
+        let mut safe_error: Option<String> = None;
+        // 分页上限防御:平台异常返回时不得无限循环
+        for _page in 0..50u32 {
+            let ctx = RequestContext {
+                operation_id: job_id.clone(),
+                account_id: account.clone(),
+                credential_generation: 0,
+                control_generation: 0,
+                deadline_ms: crate::domain::time_util::utc_now_ms() + 60_000,
+            };
+            match driver.list_products_boxed(ctx, cursor.clone()).await {
+                Ok(page) => {
+                    let next = page.next_cursor.clone();
+                    let account_page = account.clone();
+                    let outcome: Result<(i64, i64), String> = db
+                        .call(move |conn| -> rusqlite::Result<(i64, i64)> {
+                            let mut counts = (0i64, 0i64);
+                            for item in &page.items {
+                                let listing_state =
+                                    if item.on_sale { "on_sale" } else { "off_sale" };
+                                let sku_json = serde_json::to_string(&item.sku_parts)
+                                    .unwrap_or_else(|_| "[]".to_string());
+                                let existed = items::find_by_external(
+                                    conn,
+                                    &account_page,
+                                    &item.external_item_id,
+                                )?
+                                .is_some();
+                                items::upsert(
+                                    conn,
+                                    &crate::domain::ids::new_id("item"),
+                                    &account_page,
+                                    &item.external_item_id,
+                                    &item.title,
+                                    listing_state,
+                                    &sku_json,
+                                    if item.sku_complete {
+                                        "complete"
+                                    } else {
+                                        "incomplete"
+                                    },
+                                )?;
+                                if existed {
+                                    counts.1 += 1
+                                } else {
+                                    counts.0 += 1
+                                }
+                            }
+                            Ok(counts)
+                        })
+                        .await
+                        .map_err(|e| format!("数据库不可用:{e}"))
+                        .and_then(|r| r.map_err(|e| format!("商品入库失败:{e}")));
+                    match outcome {
+                        Ok((a, u)) => {
+                            added += a;
+                            updated += u;
+                        }
+                        Err(msg) => {
+                            safe_error = Some(msg);
+                            break;
+                        }
+                    }
+                    match next {
+                        Some(c) => cursor = Some(c),
+                        None => break,
+                    }
+                }
+                Err(e) => {
+                    safe_error = Some(format!("平台同步失败:{e}"));
+                    break;
+                }
+            }
+        }
+        let state_str = if safe_error.is_some() {
+            "failed"
+        } else {
+            "succeeded"
+        };
+        let result_ref = if safe_error.is_none() {
+            Some(format!("items:added={added},updated={updated}"))
+        } else {
+            None
+        };
+        let _ = db
+            .call(move |conn| {
+                crate::adapters::sqlite::repos::jobs::finish(
+                    conn,
+                    &job_id,
+                    job_version,
+                    state_str,
+                    result_ref.as_deref(),
+                    safe_error.as_deref(),
+                )
+            })
+            .await;
+    });
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "operation_id": crate::domain::ids::new_id("op"),
+            "job": {
+                "id": job.id, "kind": job.kind, "state": job.state, "version": job.version,
+                "created_at": crate::domain::time_util::format_rfc3339(job.created_at),
+                "updated_at": crate::domain::time_util::format_rfc3339(job.updated_at),
+                "target_id": job.target_id,
+            },
+        })),
     )
+        .into_response()
 }

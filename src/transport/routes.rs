@@ -207,6 +207,11 @@ struct JobSummaryDto {
     updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_id: Option<String>,
+    // 002 商品同步结果摘要/安全错误(不含凭证等敏感信息);旧消费者忽略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_error: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -505,6 +510,8 @@ fn job_summary_dto(row: &crate::application::jobs::JobRow) -> JobSummaryDto {
         created_at: format_rfc3339(row.created_at),
         updated_at: format_rfc3339(row.updated_at),
         target_id: row.target_id.clone(),
+        result_ref: row.result_ref.clone(),
+        safe_error: row.safe_error.clone(),
     }
 }
 

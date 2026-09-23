@@ -100,3 +100,65 @@ export function parsePage<T>(v: unknown, parseItem: (raw: unknown) => T): Page<T
     next_cursor: typeof next === "string" ? next : null
   };
 }
+
+/** dashboard 摘要(T075 既有 + 002 增量字段,contracts/dashboard-api.md)。
+ *  orders_today/delivered_today 为 002 新增:旧版本服务缺失时界面降级为"统计不可用",
+ *  不得显示 0 冒充真实计数(契约不变量)。 */
+export interface DashboardSummary {
+  accounts: Array<{
+    id: string;
+    display_name: string;
+    connection_state: string;
+    run_enabled: boolean;
+    auto_delivery_enabled: boolean;
+  }>;
+  open_issue_count: number;
+  active_job_count: number;
+  persistence: string;
+  stopping: boolean;
+  restore: {
+    state: string;
+    quarantine_started_at: string | null;
+    unresolved_count: number;
+    restore_epoch: number;
+  } | null;
+  orders_today?: number;
+  delivered_today?: number;
+}
+
+export function parseDashboardSummary(v: unknown): DashboardSummary {
+  if (!isRecord(v)) throw new Error("摘要响应格式错误");
+  const accountsRaw = Array.isArray(v["accounts"]) ? v["accounts"] : [];
+  const restoreRaw = v["restore"];
+  const out: DashboardSummary = {
+    accounts: accountsRaw.map((a): DashboardSummary["accounts"][number] => {
+      const r = a as Record<string, unknown>;
+      return {
+        id: String(r["id"] ?? ""),
+        display_name: String(r["display_name"] ?? ""),
+        connection_state: String(r["connection_state"] ?? "paused"),
+        run_enabled: r["run_enabled"] === true,
+        auto_delivery_enabled: r["auto_delivery_enabled"] === true
+      };
+    }),
+    open_issue_count: typeof v["open_issue_count"] === "number" ? v["open_issue_count"] : 0,
+    active_job_count: typeof v["active_job_count"] === "number" ? v["active_job_count"] : 0,
+    persistence: String(v["persistence"] ?? "unknown"),
+    stopping: v["stopping"] === true,
+    restore: isRecord(restoreRaw)
+      ? {
+          state: String(restoreRaw["state"] ?? "quarantined"),
+          quarantine_started_at:
+            typeof restoreRaw["quarantine_started_at"] === "string"
+              ? restoreRaw["quarantine_started_at"]
+              : null,
+          unresolved_count:
+            typeof restoreRaw["unresolved_count"] === "number" ? restoreRaw["unresolved_count"] : 0,
+          restore_epoch: typeof restoreRaw["restore_epoch"] === "number" ? restoreRaw["restore_epoch"] : 0
+        }
+      : null
+  };
+  if (typeof v["orders_today"] === "number") out.orders_today = v["orders_today"];
+  if (typeof v["delivered_today"] === "number") out.delivered_today = v["delivered_today"];
+  return out;
+}

@@ -1,5 +1,6 @@
-//! mtop 协议模块:签名与请求构造。
+//! mtop 协议模块:签名、HTTP 客户端、Token 续期与错误分类。
 
+pub mod client;
 pub mod sign;
 
 #[cfg(test)]

@@ -1,0 +1,4 @@
+/* 样式入口(T001/T058):tokens + base + components;旧版 shared/styles.css 已移除。 */
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";

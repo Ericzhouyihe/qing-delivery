@@ -253,3 +253,16 @@ pub struct AuthorizationSession {
 pub type AmountRef = Money;
 pub type ContentAxis = ContentState;
 pub type ConfirmAxis = ConfirmationState;
+
+/// 商品同步驱动(对象安全形态):`PlatformAdapter::list_products` 为 AFIT,
+/// 不能造 trait 对象;transport 经本端口触发真实平台同步而不依赖具体适配器类型。
+/// 实现须把失败如实分类返回,不伪造空结果(§5)。
+pub trait ItemSyncDriver: Send + Sync {
+    fn list_products_boxed(
+        &self,
+        ctx: RequestContext,
+        cursor: Option<String>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ProductPage, PlatformError>> + Send>,
+    >;
+}

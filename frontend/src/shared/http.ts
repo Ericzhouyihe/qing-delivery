@@ -36,6 +36,11 @@ export async function httpRequest<T>(path: string, opts: RequestOptions = {}): P
     signal: opts.signal,
     credentials: "same-origin"
   });
+  // 会话过期(操作中途 401/403):广播给路由回落登录并记忆目标页(US8-2)。
+  // 登录表单自身的 401 不在此列(session.authenticated 为 false)。
+  if ((res.status === 401 || res.status === 403) && session.authenticated) {
+    document.dispatchEvent(new CustomEvent("qing:session-expired"));
+  }
   if (res.status === 204) {
     return undefined as T;
   }

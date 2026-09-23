@@ -37,6 +37,11 @@ pub async fn dashboard(State(state): SharedState, headers: HeaderMap) -> Respons
                 [],
                 |r| r.get(0),
             )?;
+            // 002 增量字段(contracts/dashboard-api.md):本地自然日计数,additive 不破坏旧消费者
+            let today = orders::count_today(
+                conn,
+                crate::domain::time_util::local_midnight_ms(crate::domain::time_util::utc_now_ms()),
+            )?;
             let restore_epoch: i64 = conn.query_row(
                 "SELECT restore_epoch FROM installation WHERE id='singleton'",
                 [],
@@ -69,6 +74,8 @@ pub async fn dashboard(State(state): SharedState, headers: HeaderMap) -> Respons
                 })).collect::<Vec<_>>(),
                 "open_issue_count": open_issues,
                 "active_job_count": active_jobs,
+                "orders_today": today.orders_today,
+                "delivered_today": today.delivered_today,
                 "persistence": "healthy",
                 "stopping": stopping_now,
                 "restore": restore,

@@ -85,11 +85,14 @@ impl AnonymousCsrf {
     }
 
     /// 校验并消费。
+    /// 校验(不消费):表单校验失败后的重试、页面刷新前的重复提交
+    /// 不应令用户陷入"CSRF 失败→必须手动刷新"的死角;令牌仍受 TTL 与
+    /// 服务端哈希绑定保护,登录成功后预会话自然作废(会话接管)。
     pub fn consume(&self, token: &str) -> bool {
         let hash = hex::encode(sha2::Sha256::digest(token.as_bytes()));
-        let mut entries = self.entries.lock().unwrap();
-        match entries.remove(&hash) {
-            Some(exp) => exp > Instant::now(),
+        let entries = self.entries.lock().unwrap();
+        match entries.get(&hash) {
+            Some(exp) => *exp > Instant::now(),
             None => false,
         }
     }
@@ -146,6 +149,11 @@ pub struct AppStateInner {
     pub config: ServeConfig,
     pub key: DataKey,
     pub manual: Option<std::sync::Arc<dyn crate::application::manual::actions::ManualOps>>,
+    /// live 构建的真实扫码驱动;mock/无协议构建为 None(端点明确报不支持)
+    pub authorization:
+        Option<std::sync::Arc<dyn crate::application::accounts::authorize::QrDriver>>,
+    /// live 构建的商品同步驱动(真实平台在售列表);None 时端点明确报不支持
+    pub item_sync: Option<std::sync::Arc<dyn crate::application::ports::platform::ItemSyncDriver>>,
     pub anonymous_csrf: AnonymousCsrf,
     pub login_limiter: LoginLimiter,
     pub stopping: AtomicBool,
@@ -158,7 +166,6 @@ pub struct AppState {
 
 impl AppState {
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         auth: AdminAuth,
         jobs: JobService,
@@ -168,6 +175,10 @@ impl AppState {
         db: crate::adapters::sqlite::db::DbThread,
         rule_service: crate::application::catalog::rules::RuleService,
         manual: Option<std::sync::Arc<dyn crate::application::manual::actions::ManualOps>>,
+        authorization: Option<
+            std::sync::Arc<dyn crate::application::accounts::authorize::QrDriver>,
+        >,
+        item_sync: Option<std::sync::Arc<dyn crate::application::ports::platform::ItemSyncDriver>>,
         config: ServeConfig,
         key: DataKey,
     ) -> Self {
@@ -180,6 +191,8 @@ impl AppState {
                 rule_service,
                 account_control,
                 manual,
+                authorization,
+                item_sync,
                 db,
                 config,
                 key,

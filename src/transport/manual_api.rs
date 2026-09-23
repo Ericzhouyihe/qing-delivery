@@ -234,7 +234,7 @@ pub async fn list_issues(
                 }
                 None => {
                     "SELECT id, order_id, account_id, kind, reason_code, allowed_actions, state, created_at
-                     FROM issues ORDER BY created_at DESC LIMIT ?2"
+                     FROM issues ORDER BY created_at DESC LIMIT ?1"
                 }
             };
             let mut stmt = conn.prepare(sql)?;

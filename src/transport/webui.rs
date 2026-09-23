@@ -6,6 +6,11 @@ use axum::response::{IntoResponse, Response};
 
 static WEBUI: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/src/webui");
 
+// cargo 不跟踪 include_dir 目录内容的变化;vite 每次构建都会改写 index.html
+// 里的资源哈希引用,include_str 的文件级依赖由此强制重编译嵌入目录,
+// 保证"不能静默使用上一次页面"(quickstart §2)。
+const _WEBUI_INDEX_FOR_REBUILD_TRACKING: &str = include_str!("../webui/index.html");
+
 pub async fn serve_static(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let wanted = if path.is_empty() { "index.html" } else { path };

@@ -18,6 +18,8 @@ use qing_delivery::transport::state::{AppState, ExecutionProfile, ServeConfig};
 /// 每个测试独占一个临时数据目录;持有锁防止清理早于 Drop。
 pub struct TestApp {
     pub router: axum::Router,
+    /// 002 起 contract 测试可经此直接播种数据(真实 DB 线程,与路由同一实例)。
+    pub db: DbThread,
     _dir: tempfile::TempDir,
     _lock: DirLock,
 }
@@ -56,11 +58,14 @@ pub async fn spawn_app() -> TestApp {
             },
         ),
         None,
+        None,
+        None,
         ServeConfig::for_bind(bind, ExecutionProfile::Live),
         key,
     );
     TestApp {
         router: routes::router(state),
+        db,
         _dir: dir,
         _lock: lock,
     }

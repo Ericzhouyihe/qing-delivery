@@ -18,3 +18,20 @@ pub fn parse_rfc3339_ms(s: &str) -> Option<i64> {
         .ok()
         .map(|dt| dt.with_timezone(&Utc).timestamp_millis())
 }
+
+/// 本地时区当日 00:00 对应的 UTC 毫秒(002 概览统计口径:本地自然日)。
+/// 解析失败(极端 DST 空档)时回退为入参,宁可多算窗口不抛错。
+pub fn local_midnight_ms(now_ms: i64) -> i64 {
+    use chrono::TimeZone;
+    let Some(local_now) = chrono::Local.timestamp_millis_opt(now_ms).single() else {
+        return now_ms;
+    };
+    let Some(naive_midnight) = local_now.date_naive().and_hms_opt(0, 0, 0) else {
+        return now_ms;
+    };
+    chrono::Local
+        .from_local_datetime(&naive_midnight)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(now_ms)
+}

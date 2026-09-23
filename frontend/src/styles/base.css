@@ -1,0 +1,72 @@
+/* 排版与基础(T010):全部消费 tokens.css 令牌,不出现裸色值。 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.65;
+}
+
+#app {
+  height: 100%;
+}
+
+h1 {
+  font-size: var(--text-xl);
+  margin: 0 0 var(--space-4);
+}
+h2 {
+  font-size: var(--text-lg);
+  margin: 0 0 var(--space-3);
+}
+h3 {
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
+}
+
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+.error-text {
+  color: var(--tone-danger-fg);
+}
+
+.truncate {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}

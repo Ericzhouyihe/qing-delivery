@@ -497,3 +497,121 @@ pub fn list_filtered(
 pub fn ping(conn: &Connection) -> rusqlite::Result<()> {
     conn.query_row("SELECT 1", [], |_| Ok(()))
 }
+
+/// 002 概览统计(contracts/dashboard-api.md):本地自然日窗口内的只读计数。
+/// delivered 口径 = 任一交付(initial 或补发)content_state='accepted';
+/// 不变量 delivered_today ≤ orders_today 由"先付款才有交付"保证。
+#[derive(Debug, PartialEq, Eq)]
+pub struct TodayCounts {
+    pub orders_today: i64,
+    pub delivered_today: i64,
+}
+
+pub fn count_today(conn: &Connection, since_ms: i64) -> rusqlite::Result<TodayCounts> {
+    let orders_today = conn.query_row(
+        "SELECT COUNT(*) FROM orders WHERE paid_at IS NOT NULL AND paid_at >= ?1",
+        params![since_ms],
+        |r| r.get(0),
+    )?;
+    let delivered_today = conn.query_row(
+        "SELECT COUNT(*) FROM orders o
+         WHERE o.paid_at IS NOT NULL AND o.paid_at >= ?1
+           AND EXISTS (SELECT 1 FROM deliveries d
+                       WHERE d.order_id = o.id AND d.content_state = 'accepted')",
+        params![since_ms],
+        |r| r.get(0),
+    )?;
+    Ok(TodayCounts {
+        orders_today,
+        delivered_today,
+    })
+}
+
+#[cfg(test)]
+mod count_today_tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let mut conn = Connection::open_in_memory().expect("内存库");
+        let dir = tempfile::tempdir().expect("临时目录");
+        crate::adapters::sqlite::migrations::apply(&mut conn, dir.path()).expect("迁移应用");
+        conn
+    }
+
+    fn seed_order(conn: &Connection, id: &str, paid_at: Option<i64>) {
+        conn.execute(
+            "INSERT OR IGNORE INTO accounts (id, platform, external_user_id, display_name, created_at, updated_at)
+             VALUES ('acct-1', 'xianyu', 'u1', '测试账号', 0, 0)",
+            [],
+        )
+        .expect("账号");
+        conn.execute(
+            "INSERT INTO orders (id, platform, account_id, external_order_id, paid_at, created_at, updated_at)
+             VALUES (?1, 'xianyu', 'acct-1', ?1, ?2, 0, 0)",
+            params![id, paid_at],
+        )
+        .expect("订单");
+    }
+
+    fn seed_delivery(conn: &Connection, order_id: &str, id: &str, kind: &str, state: &str) {
+        conn.execute(
+            "INSERT INTO deliveries (id, order_id, kind, content_state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 0, 0)",
+            params![id, order_id, kind, state],
+        )
+        .expect("交付");
+    }
+
+    #[test]
+    fn 零订单与窗口边界() {
+        let conn = test_conn();
+        let since = 1_760_000_000_000i64;
+        assert_eq!(
+            count_today(&conn, since).unwrap(),
+            TodayCounts {
+                orders_today: 0,
+                delivered_today: 0
+            }
+        );
+
+        // 窗口前 1ms 排除;窗口起点包含;未付款订单不计入
+        seed_order(&conn, "o-old", Some(since - 1));
+        seed_order(&conn, "o-edge", Some(since));
+        seed_order(&conn, "o-new", Some(since + 60_000));
+        seed_order(&conn, "o-unpaid", None);
+
+        let c = count_today(&conn, since).unwrap();
+        assert_eq!(c.orders_today, 2);
+        assert_eq!(c.delivered_today, 0);
+    }
+
+    #[test]
+    fn 已交付口径含补发且不变量成立() {
+        let conn = test_conn();
+        let since = 1_760_000_000_000i64;
+        seed_order(&conn, "o1", Some(since));
+        seed_order(&conn, "o2", Some(since + 1));
+        seed_order(&conn, "o3", Some(since + 2));
+        // o1:initial accepted;o2:initial unknown + 补发 accepted;o3:未交付
+        seed_delivery(&conn, "o1", "d1", "initial", "accepted");
+        seed_delivery(&conn, "o2", "d2", "initial", "unknown");
+        seed_delivery(&conn, "o2", "d3", "resend", "accepted");
+        seed_delivery(&conn, "o3", "d4", "initial", "dispatching");
+
+        let c = count_today(&conn, since).unwrap();
+        assert_eq!(c.orders_today, 3);
+        assert_eq!(c.delivered_today, 2);
+        assert!(c.delivered_today <= c.orders_today);
+    }
+
+    #[test]
+    fn 本地午夜属性() {
+        let now = crate::domain::time_util::utc_now_ms();
+        let midnight = crate::domain::time_util::local_midnight_ms(now);
+        assert!(midnight <= now, "午夜不晚于当前");
+        assert!(
+            now - midnight < 48 * 3_600_000,
+            "午夜距当前不超过 48h(跨日界)"
+        );
+    }
+}

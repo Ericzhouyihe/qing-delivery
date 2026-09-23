@@ -1,0 +1,97 @@
+/* 设计令牌(T004):双主题唯一色彩/间距/字号来源(FR-002/FR-004,研究 D2)。
+ * 五类语义色 normal/warning/danger/neutral/info 为全局唯一色彩词汇;
+ * 暗色主题逐项覆盖,保证语义色在两种主题下均可辨(SC-201)。 */
+
+:root {
+  color-scheme: light;
+  --font-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", Consolas, monospace;
+
+  /* 间距 4px 基线 */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  /* 字号层级 */
+  --text-xs: 0.75rem;
+  --text-sm: 0.85rem;
+  --text-md: 0.95rem;
+  --text-lg: 1.1rem;
+  --text-xl: 1.35rem;
+  --text-2xl: 1.75rem;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --shadow-1: 0 1px 2px rgb(15 23 42 / 8%);
+  --shadow-2: 0 4px 16px rgb(15 23 42 / 12%);
+  --shadow-overlay: 0 12px 40px rgb(15 23 42 / 22%);
+
+  /* 布局 */
+  --sidebar-w: 216px;
+  --sidebar-w-collapsed: 56px;
+  --topbar-h: 52px;
+
+  /* 浅色主题(默认) */
+  --bg: #f4f6f9;
+  --bg-elev: #ffffff;
+  --bg-inset: #eef1f5;
+  --bg-hover: #e9edf3;
+  --border: #d7dde6;
+  --border-strong: #b9c2d0;
+  --text: #1c2430;
+  --text-muted: #5c6774;
+  --primary: #2f6fed;
+  --primary-hover: #1f5fd8;
+  --primary-contrast: #ffffff;
+  --focus-ring: #7ea3f4;
+
+  /* 语义色(前景/背景成对,徽章与统计卡共用) */
+  --tone-normal-fg: #1a7f4b;
+  --tone-normal-bg: #e2f5ea;
+  --tone-warning-fg: #92610a;
+  --tone-warning-bg: #fdf0d5;
+  --tone-danger-fg: #b3261e;
+  --tone-danger-bg: #fde5e3;
+  --tone-neutral-fg: #566070;
+  --tone-neutral-bg: #e8ecf1;
+  --tone-info-fg: #1d5fc2;
+  --tone-info-bg: #e3edfc;
+
+  --skeleton: linear-gradient(100deg, #e6eaf0 40%, #f2f5f9 50%, #e6eaf0 60%);
+  --overlay: rgb(15 23 42 / 45%);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #10151c;
+  --bg-elev: #1a212b;
+  --bg-inset: #141a23;
+  --bg-hover: #232c38;
+  --border: #2c3644;
+  --border-strong: #3d4a5c;
+  --text: #e5eaf1;
+  --text-muted: #97a3b4;
+  --primary: #5b8ff7;
+  --primary-hover: #7ba5f9;
+  --primary-contrast: #0d1320;
+  --focus-ring: #8fb4ff;
+
+  --tone-normal-fg: #6fd5a0;
+  --tone-normal-bg: #12301f;
+  --tone-warning-fg: #eec36a;
+  --tone-warning-bg: #38290d;
+  --tone-danger-fg: #f59a92;
+  --tone-danger-bg: #3d1713;
+  --tone-neutral-fg: #a7b2c2;
+  --tone-neutral-bg: #232c38;
+  --tone-info-fg: #8db8f9;
+  --tone-info-bg: #12233f;
+
+  --skeleton: linear-gradient(100deg, #202835 40%, #2a3442 50%, #202835 60%);
+  --overlay: rgb(0 0 0 / 60%);
+}

@@ -109,10 +109,24 @@ pub async fn create_qr_session(
         return e.into_response();
     }
     let replace = body.and_then(|Json(b)| b.replace_account_id);
-    match state.inner.qr_flows.create(replace.as_deref()).await {
-        Ok(s) => (StatusCode::CREATED, Json(qr_session_dto(&s))).into_response(),
-        Err(e) => err_shared(ErrorCode::PersistenceUnavailable, &e.to_string()),
+    // live:先创建本地状态机,再向平台取真实二维码;取码失败回滚本地会话(取消)
+    let created = state.inner.qr_flows.create(replace.as_deref()).await;
+    let Ok(session) = created else {
+        return err_shared(
+            ErrorCode::PersistenceUnavailable,
+            &created.err().map(|e| e.to_string()).unwrap_or_default(),
+        );
+    };
+    if let Some(driver) = state.inner.authorization.as_ref() {
+        match driver.create(&session.id).await {
+            Ok(_) => {}
+            Err(message) => {
+                let _ = state.inner.qr_flows.cancel(&session.id).await;
+                return err_shared(ErrorCode::UnsupportedCapability, &message);
+            }
+        }
     }
+    (StatusCode::CREATED, Json(qr_session_dto(&session))).into_response()
 }
 
 pub async fn get_qr_session(
@@ -147,18 +161,52 @@ pub async fn get_qr_image(
     if let Err(e) = require_admin_public(&state, &headers, false).await {
         return e.into_response();
     }
-    if state.inner.qr_flows.observe(&qr_id).await.is_ok() {
+    if state.inner.qr_flows.observe(&qr_id).await.is_err() {
+        return err_shared(ErrorCode::ResourceNotFound, "授权会话不存在");
+    }
+    // live:真实二维码(SVG data URL);mock/无驱动回退占位图
+    if let Some(driver) = state.inner.authorization.as_ref()
+        && let Some(data_url) = driver.image(&qr_id).await
+        && let Some((content_type, bytes)) = decode_data_url(&data_url)
+    {
         return (
             StatusCode::OK,
             [
-                (header::CONTENT_TYPE, "image/png"),
+                (header::CONTENT_TYPE, content_type),
                 (header::CACHE_CONTROL, "no-store"),
             ],
-            PLACEHOLDER_PNG.to_vec(),
+            bytes,
         )
             .into_response();
     }
-    err_shared(ErrorCode::ResourceNotFound, "授权会话不存在")
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        PLACEHOLDER_PNG.to_vec(),
+    )
+        .into_response()
+}
+
+/// data:image/svg+xml;base64,xxx → (content_type, bytes)
+fn decode_data_url(data_url: &str) -> Option<(&'static str, Vec<u8>)> {
+    use base64::Engine;
+    let rest = data_url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    let content_type = match meta.split(';').next()?.trim() {
+        "image/svg+xml" => "image/svg+xml",
+        "image/png" => "image/png",
+        _ => return None,
+    };
+    if !meta.contains("base64") {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .ok()?;
+    Some((content_type, bytes))
 }
 
 pub async fn cancel_qr_session(
