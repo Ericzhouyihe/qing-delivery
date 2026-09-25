@@ -60,6 +60,7 @@ pub async fn spawn_app() -> TestApp {
         None,
         None,
         None,
+        None,
         ServeConfig::for_bind(bind, ExecutionProfile::Live),
         key,
     );

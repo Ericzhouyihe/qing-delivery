@@ -162,3 +162,81 @@ export function parseDashboardSummary(v: unknown): DashboardSummary {
   if (typeof v["delivered_today"] === "number") out.delivered_today = v["delivered_today"];
   return out;
 }
+
+/** 运营统计概览(005,contracts/stats-api.md)。
+ *  change_percent 为 null 表示前区间无数据(界面隐藏徽标,不显示 0%);
+ *  trend 非数组时降级为空数组,由界面显示"统计不可用"占位。 */
+export interface StatsOverview {
+  range: { from: number; to: number; granularity: "hourly" | "daily" };
+  revenue: {
+    minor_units: number;
+    currency: string;
+    order_count: number;
+    previous_minor_units: number;
+    change_percent: number | null;
+  };
+  accounts: { online: number; total: number };
+  pending_issues: number;
+  stopping: boolean;
+  restore: {
+    state: string;
+    quarantine_started_at: string | null;
+    unresolved_count: number;
+    restore_epoch: number;
+  } | null;
+  trend: Array<{ bucket_start: number; minor_units: number; order_count: number }>;
+}
+
+export function parseStatsOverview(v: unknown): StatsOverview {
+  if (!isRecord(v)) throw new Error("统计响应格式错误");
+  const rangeRaw = isRecord(v["range"]) ? v["range"] : {};
+  const revenueRaw = isRecord(v["revenue"]) ? v["revenue"] : {};
+  const accountsRaw = isRecord(v["accounts"]) ? v["accounts"] : {};
+  const trendRaw = Array.isArray(v["trend"]) ? v["trend"] : [];
+  const restoreRaw = v["restore"];
+  return {
+    range: {
+      from: typeof rangeRaw["from"] === "number" ? rangeRaw["from"] : 0,
+      to: typeof rangeRaw["to"] === "number" ? rangeRaw["to"] : 0,
+      granularity: rangeRaw["granularity"] === "daily" ? "daily" : "hourly"
+    },
+    revenue: {
+      minor_units: typeof revenueRaw["minor_units"] === "number" ? revenueRaw["minor_units"] : 0,
+      currency: String(revenueRaw["currency"] ?? "CNY"),
+      order_count: typeof revenueRaw["order_count"] === "number" ? revenueRaw["order_count"] : 0,
+      previous_minor_units:
+        typeof revenueRaw["previous_minor_units"] === "number"
+          ? revenueRaw["previous_minor_units"]
+          : 0,
+      change_percent:
+        typeof revenueRaw["change_percent"] === "number" ? revenueRaw["change_percent"] : null
+    },
+    accounts: {
+      online: typeof accountsRaw["online"] === "number" ? accountsRaw["online"] : 0,
+      total: typeof accountsRaw["total"] === "number" ? accountsRaw["total"] : 0
+    },
+    pending_issues: typeof v["pending_issues"] === "number" ? v["pending_issues"] : 0,
+    stopping: v["stopping"] === true,
+    restore: isRecord(restoreRaw)
+      ? {
+          state: String(restoreRaw["state"] ?? "quarantined"),
+          quarantine_started_at:
+            typeof restoreRaw["quarantine_started_at"] === "string"
+              ? restoreRaw["quarantine_started_at"]
+              : null,
+          unresolved_count:
+            typeof restoreRaw["unresolved_count"] === "number" ? restoreRaw["unresolved_count"] : 0,
+          restore_epoch:
+            typeof restoreRaw["restore_epoch"] === "number" ? restoreRaw["restore_epoch"] : 0
+        }
+      : null,
+    trend: trendRaw.map((t): StatsOverview["trend"][number] => {
+      const r = isRecord(t) ? t : {};
+      return {
+        bucket_start: typeof r["bucket_start"] === "number" ? r["bucket_start"] : 0,
+        minor_units: typeof r["minor_units"] === "number" ? r["minor_units"] : 0,
+        order_count: typeof r["order_count"] === "number" ? r["order_count"] : 0
+      };
+    })
+  };
+}

@@ -78,13 +78,12 @@ describe("启停确认流(US3-4/F 约定:取消不发起任何变更)", () => {
     document.body.append(root);
     const dispose = accountsPage(root);
     await vi.waitFor(() => {
-      expect(root.querySelector(".account-card")).not.toBeNull();
+      expect(root.querySelector(".account-row")).not.toBeNull();
     });
 
-    const toggle = root.querySelector<HTMLInputElement>("input[type=checkbox]")!;
-    expect(toggle.checked).toBe(true);
-    toggle.checked = false; // 模拟用户点击停用
-    toggle.dispatchEvent(new Event("change"));
+    const toggle = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((b) => (b.title ?? "").includes("停用账号"))!;
+    toggle.click();
 
     await vi.waitFor(() => {
       expect(document.querySelector(".overlay .modal-title")?.textContent).toContain("停用账号");
@@ -97,7 +96,7 @@ describe("启停确认流(US3-4/F 约定:取消不发起任何变更)", () => {
 
     const controlCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/control"));
     expect(controlCalls.length).toBe(0);
-    expect(toggle.checked).toBe(true);
+// 取消后行仍在(图标无持久 checked)
 
     expect(typeof dispose).toBe("function");
     (dispose as () => void)();

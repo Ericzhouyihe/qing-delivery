@@ -8,7 +8,14 @@ use rusqlite::{Connection, params};
 use crate::domain::time_util::utc_now_ms;
 
 /// (版本, SQL)按版本升序;新增迁移只追加,不修改历史条目。
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../../../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../../../migrations/0001_init.sql")),
+    (2, include_str!("../../../migrations/0002_verification.sql")),
+    (
+        3,
+        include_str!("../../../migrations/0003_account_profile.sql"),
+    ),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationError {
@@ -88,9 +95,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut conn = Connection::open(dir.path().join("m.db")).unwrap();
         let v1 = apply(&mut conn, dir.path()).unwrap();
-        assert_eq!(v1, 1);
+        assert_eq!(v1, 3, "0003 后共 3 个迁移");
         let v2 = apply(&mut conn, dir.path()).unwrap();
-        assert_eq!(v2, 1, "重复应用应为空操作");
+        assert_eq!(v2, 3, "重复应用应为空操作");
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
@@ -98,11 +105,14 @@ mod tests {
                   'items','sync_jobs','rules','rule_contents','orders','order_facts',
                   'inbound_events','deliveries','content_snapshots','attempts','delivery_proofs',
                   'order_execution_guards','issues','manual_actions','command_receipts',
-                  'operation_jobs','restore_reviews','backup_manifests')",
+                  'operation_jobs','restore_reviews','backup_manifests','verification_attempts')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 24, "全部实体表应存在");
+        assert_eq!(
+            tables, 25,
+            "全部实体表应存在(0002 增 verification_attempts)"
+        );
     }
 }

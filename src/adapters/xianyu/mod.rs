@@ -7,4 +7,5 @@ pub mod codec;
 pub mod cookies;
 pub mod events;
 pub mod mtop;
+pub mod profile;
 pub mod ws;

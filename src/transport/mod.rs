@@ -13,4 +13,5 @@ pub mod orders_api;
 pub mod restore_api;
 pub mod routes;
 pub mod state;
+pub mod stats_api;
 pub mod webui;

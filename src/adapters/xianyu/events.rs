@@ -156,6 +156,7 @@ pub fn extract(msg: &Value) -> Extracted {
 /// 规范事件包装:失败/无业务含义的消息不产生事件。
 pub fn extract_events(msg: &Value, account_id: &str, generation: i64) -> Vec<PlatformEvent> {
     let extracted = extract(msg);
+    // 003 D2:风控文本信号(punish 系关键词)→ 验证要求事件;普通消息不触发(误报为零)
     let meta = EventMeta {
         account_id: account_id.to_string(),
         credential_generation: generation,

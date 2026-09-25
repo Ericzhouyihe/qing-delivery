@@ -1030,6 +1030,29 @@ fn parse_epoch_ms(s: &str) -> Option<i64> {
     Some(if n > 10_000_000_000 { n } else { n * 1000 })
 }
 
+/// 对象安全封装(transport 经 AppState 触发同步;AFIT 主 trait 不动)。
+impl crate::application::ports::platform::ItemSyncDriver for XianyuAdapter {
+    fn list_products_boxed(
+        &self,
+        ctx: crate::application::ports::platform::RequestContext,
+        cursor: Option<String>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::application::ports::platform::ProductPage,
+                        crate::application::ports::platform::PlatformError,
+                    >,
+                > + Send,
+        >,
+    > {
+        // AFIT future 借用参数;克隆自身与入参以获得 'static future
+        let this = self.clone();
+        Box::pin(async move {
+            <Self as PlatformAdapter>::list_products(&this, &ctx, cursor.as_deref()).await
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,35 +1116,11 @@ mod tests {
             Some("b-1")
         );
         let item = find_object_recursive(&detail, "itemInfo").unwrap();
-        let parts = sku_parts_of(Some(&item)).unwrap();
+        let parts = sku_parts_of(Some(item)).unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].value_label, "标准");
 
         // 无 payTime 字段时不得臆造时间
         assert_eq!(find_time_ms(&detail, &["payTime"]), None);
-    }
-}
-
-/// 对象安全封装(transport 经 AppState 触发同步;AFIT 主 trait 不动)。
-impl crate::application::ports::platform::ItemSyncDriver for XianyuAdapter {
-    fn list_products_boxed(
-        &self,
-        ctx: crate::application::ports::platform::RequestContext,
-        cursor: Option<String>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<
-                        crate::application::ports::platform::ProductPage,
-                        crate::application::ports::platform::PlatformError,
-                    >,
-                > + Send,
-        >,
-    > {
-        // AFIT future 借用参数;克隆自身与入参以获得 'static future
-        let this = self.clone();
-        Box::pin(async move {
-            <Self as PlatformAdapter>::list_products(&this, &ctx, cursor.as_deref()).await
-        })
     }
 }

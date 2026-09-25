@@ -70,6 +70,9 @@ pub fn spawn<A>(
     key: DataKey,
     adapter: A,
     transport: Option<std::sync::Arc<dyn AccountTransport>>,
+    verification: Option<
+        std::sync::Arc<crate::application::verification::service::VerificationService>,
+    >,
 ) -> RuntimeHandles<A>
 where
     A: PlatformAdapter + Clone + 'static,
@@ -101,7 +104,15 @@ where
     let dispatch_delivery = delivery.clone();
     let dispatch_db = db.clone();
     tokio::spawn(async move {
-        dispatch_loop(event_rx, pipeline, dispatch_delivery, dispatch_db).await;
+        let dispatch_verify = verification.clone();
+        dispatch_loop(
+            event_rx,
+            pipeline,
+            dispatch_delivery,
+            dispatch_db,
+            dispatch_verify,
+        )
+        .await;
     });
 
     // 账号值守:启停传输任务(其 JoinHandle 即运行时收尾点)
@@ -173,6 +184,9 @@ async fn dispatch_loop<A: PlatformAdapter + 'static>(
     pipeline: EventPipeline,
     delivery: std::sync::Arc<DeliveryService<A>>,
     db: DbThread,
+    verification: Option<
+        std::sync::Arc<crate::application::verification::service::VerificationService>,
+    >,
 ) {
     while let Some(event) = rx.recv().await {
         let (_meta, field) = fields_of(&event);
@@ -190,12 +204,32 @@ async fn dispatch_loop<A: PlatformAdapter + 'static>(
                 })
                 .await;
         }
+        // 003:验证要求信号(WS/mtop/QR 汇入 AuthorizationChanged)→ 处置服务
+        if let PlatformEvent::AuthorizationChanged { state, .. } = &event
+            && state == "verification_required"
+            && let Some(service) = verification.as_ref()
+            && let Some(account) = field.account_id.clone()
+        {
+            service.handle_signal(crate::application::verification::VerificationSignal {
+                account_id: account,
+                source: crate::application::verification::SignalSource::Ws,
+                url: None,
+                raw: state.clone(),
+            });
+        }
         match pipeline.process(&event).await {
             Ok(EventOutcome::PaymentSignal { .. })
                 if field.account_id.is_some() && field.external_order_id.is_some() =>
             {
                 let account = field.account_id.clone().unwrap_or_default();
                 let order = field.external_order_id.clone().unwrap_or_default();
+                // 003 FR-003:验证闸门关闭时延后触发;120s 补偿扫描兜底
+                if let Some(service) = verification.as_ref()
+                    && !service.gate.allows(&account)
+                {
+                    tracing::warn!(account, "验证处置中,交付触发延后(闸门)");
+                    continue;
+                }
                 // 全链核验:资格→唯一 initial→冻结→发送→分类;重复由幂等与唯一约束兜底
                 if let Err(e) = delivery.handle_payment(&account, &order).await {
                     tracing::warn!(account, order, error = %e, "付款候选交付处理失败");

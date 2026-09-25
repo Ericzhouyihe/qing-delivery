@@ -26,6 +26,8 @@ fn account_summary(row: &repo::AccountRow) -> serde_json::Value {
         "platform": row.platform,
         "platform_user_id": row.external_user_id,
         "display_name": row.display_name,
+        "avatar_url": row.avatar_url,
+        "remark": row.remark,
         "connection_state": AccountStatus::parse(&row.status).dto_str(),
         "control": {
             "run_enabled": row.runtime_enabled,
@@ -306,30 +308,204 @@ pub async fn start_verification(
     if let Err(e) = require_admin_public(&state, &headers, true).await {
         return e.into_response();
     }
-    let Ok(job) = state
-        .inner
-        .jobs
-        .create("account_verification", Some(&account_id))
-        .await
-    else {
-        return err_shared(ErrorCode::PersistenceUnavailable, "任务服务不可用");
+    // 003:真实处置管道(手动触发=同管道;无驱动/活跃会话冲突如实返回)
+    let Some(service) = state.inner.verification.clone() else {
+        return err_shared(
+            ErrorCode::UnsupportedCapability,
+            "浏览器不可用或本构建未接入验证自动化;请安装 Chrome/Edge 后重试,或到平台手动完成验证",
+        );
     };
+    if let Some(active) = service.snapshot(&account_id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "operation_id": crate::domain::ids::new_id("op"),
+                "session": {
+                    "id": active.id, "state": active.state.as_str(),
+                    "trigger": active.trigger, "retry_count": active.retry_count,
+                },
+                "note": "已有活跃验证会话",
+            })),
+        )
+            .into_response();
+    }
+    service.handle_signal(crate::application::verification::VerificationSignal {
+        account_id: account_id.clone(),
+        source: crate::application::verification::SignalSource::Manual,
+        url: None,
+        raw: "手动触发".into(),
+    });
+    let session = service.snapshot(&account_id);
     (
         StatusCode::ACCEPTED,
         Json(json!({
             "operation_id": crate::domain::ids::new_id("op"),
-            "job": {
-                "id": job.id, "kind": job.kind, "state": job.state, "version": job.version,
-                "created_at": format_rfc3339(job.created_at), "updated_at": format_rfc3339(job.updated_at),
-                "target_id": job.target_id,
-            },
+            "session": session.map(|s| json!({
+                "id": s.id, "state": s.state.as_str(),
+                "trigger": s.trigger, "retry_count": s.retry_count,
+                "started_at": format_rfc3339(s.started_at),
+            })),
             "verification": {
                 "kind": "official_browser",
-                "state": "pending",
-                "instruction": "请在打开的官方页面完成安全验证;当前构建尚未接入浏览器自动化(T050)。",
-                "browser_available": false,
+                "browser_available": true,
             },
         })),
     )
         .into_response()
+}
+
+/// 当前会话与最近尝试(003 契约 §2;前端 5s 轮询活跃会话)
+pub async fn get_verification(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, false).await {
+        return e.into_response();
+    }
+    let Some(service) = state.inner.verification.clone() else {
+        return err_shared(
+            ErrorCode::UnsupportedCapability,
+            "验证自动化未接入(浏览器不可用或 mock 构建)",
+        );
+    };
+    let active = service.snapshot(&account_id).map(|s| {
+        json!({
+            "id": s.id, "state": s.state.as_str(), "trigger": s.trigger,
+            "retry_count": s.retry_count, "started_at": format_rfc3339(s.started_at),
+        })
+    });
+    let attempts: Vec<serde_json::Value> = service
+        .recent_attempts(&account_id)
+        .await
+        .into_iter()
+        .map(|a| {
+            json!({
+                "id": a.id, "trigger_source": a.trigger_source,
+                "trigger_reason": a.trigger_reason, "verification_url": a.verification_url,
+                "started_at": format_rfc3339(a.started_at),
+                "finished_at": a.finished_at.map(format_rfc3339),
+                "outcome": a.outcome, "duration_ms": a.duration_ms,
+                "credential_updated": a.credential_updated, "failure_reason": a.failure_reason,
+            })
+        })
+        .collect();
+    Json(json!({ "active": active, "recent_attempts": attempts })).into_response()
+}
+
+/// 004:手动刷新资料(US1;风控→409 转验证提示,契约 §profile-fetch)。
+pub async fn fetch_account_profile(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, true).await {
+        return e.into_response();
+    }
+    let Some(_svc) = state.inner.verification.as_ref().map(|_| ()) else {
+        // 资料服务与验证服务同生命周期(均依赖浏览器/协议);无验证服务时如实报不支持
+        return err_shared(
+            ErrorCode::UnsupportedCapability,
+            "资料拉取需 live 协议(浏览器/协议未接入)",
+        );
+    };
+    let db = state.inner.db.clone();
+    let key = crate::adapters::windows::keys::DataKey {
+        key_id: state.inner.key.key_id.clone(),
+        key: state.inner.key.key,
+    };
+    let svc = std::sync::Arc::new(crate::application::accounts::profile::ProfileService::new(
+        db,
+        key,
+        state.inner.verification.clone(),
+    ));
+    let result = svc.refresh(&account_id).await;
+    match result {
+        Ok(crate::application::accounts::profile::ProfileRefresh::Updated {
+            nickname,
+            avatar_url,
+        }) => (
+            StatusCode::OK,
+            Json(json!({ "status": "updated", "nickname": nickname, "avatar_url": avatar_url })),
+        )
+            .into_response(),
+        Ok(crate::application::accounts::profile::ProfileRefresh::VerificationTriggered) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "status": "verification_required",
+                "message": "资料拉取触发平台风控,已转入安全验证流程(见账号卡进度)" })),
+        )
+            .into_response(),
+        Ok(other) => (
+            StatusCode::OK,
+            Json(json!({ "status": "kept", "detail": format!("{other:?}") })),
+        )
+            .into_response(),
+        Err(e) => err_shared(ErrorCode::PersistenceUnavailable, &e),
+    }
+}
+
+/// 004:删除账号(US2;409=活跃验证,404,204;契约 §DELETE)。
+pub async fn delete_account(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, true).await {
+        return e.into_response();
+    }
+    let svc = crate::application::accounts::removal::RemovalService::new(
+        state.inner.db.clone(),
+        state.inner.verification.clone(),
+    );
+    match svc.remove(&account_id).await {
+        Ok(crate::application::accounts::removal::RemovalOutcome::Removed) => {
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(crate::application::accounts::removal::RemovalOutcome::BlockedByVerification) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": { "code": "verification_active",
+                "message": "该账号有进行中的安全验证,请等待处置结束后再删除" } })),
+        )
+            .into_response(),
+        Ok(crate::application::accounts::removal::RemovalOutcome::NotFound) => {
+            err_shared(ErrorCode::ResourceNotFound, "账号不存在")
+        }
+        Err(e) => err_shared(ErrorCode::PersistenceUnavailable, &e),
+    }
+}
+
+/// 004:修改备注(US3;≤64 字符;null=清空;契约 §PATCH)。
+pub async fn patch_account(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Path(account_id): Path<String>,
+    body: axum::Json<serde_json::Value>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, true).await {
+        return e.into_response();
+    }
+    let Some(remark_raw) = body.get("remark") else {
+        return err_shared(ErrorCode::InvalidRequest, "缺少 remark 字段");
+    };
+    let remark: Option<String> = match remark_raw {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => return err_shared(ErrorCode::InvalidRequest, "remark 须为字符串或 null"),
+    };
+    if let Some(r) = remark.as_ref()
+        && r.chars().count() > 64
+    {
+        return err_shared(ErrorCode::InvalidRequest, "备注不得超过 64 字符");
+    }
+    let account = account_id.to_string();
+    let updated = state
+        .inner
+        .db
+        .call(move |conn| repo::set_remark(conn, &account, remark.as_deref()))
+        .await;
+    match updated {
+        Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(false)) => err_shared(ErrorCode::ResourceNotFound, "账号不存在"),
+        _ => err_shared(ErrorCode::PersistenceUnavailable, "备注保存不可用"),
+    }
 }

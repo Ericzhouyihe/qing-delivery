@@ -371,8 +371,8 @@ fn run_serve(args: ServeArgs) -> i32 {
     // 运行时接线(T093):live 构造真实协议适配器并启动账号值守;
     // mock(dev-fixtures)构造进程内假适配器。人工动作句柄与扫码驱动注入 AppState。
     // build_runtime 内部 tokio::spawn,必须在 rt 上下文内构造(spawn 的任务随 rt 存活)
-    let (manual, authorization, item_sync, runtime_stop) =
-        rt.block_on(async { build_runtime(profile, db.clone(), &key) });
+    let (manual, authorization, item_sync, verification, runtime_stop) =
+        rt.block_on(async { build_runtime(profile, db.clone(), &key, &data_dir.root) });
 
     let state = AppState::new(
         AdminAuth::new(db.clone()),
@@ -391,6 +391,7 @@ fn run_serve(args: ServeArgs) -> i32 {
         manual,
         authorization,
         item_sync,
+        verification,
         ServeConfig::for_bind(bind, profile),
         key,
     );
@@ -442,10 +443,12 @@ fn build_runtime(
     profile: qing_delivery::transport::state::ExecutionProfile,
     db: DbThread,
     key: &qing_delivery::adapters::windows::keys::DataKey,
+    data_root: &std::path::Path,
 ) -> (
     Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
     Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
     Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
+    Option<std::sync::Arc<qing_delivery::application::verification::service::VerificationService>>,
     Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 ) {
     use qing_delivery::application::accounts::authorize::{AuthorizationService, QrDriver};
@@ -456,21 +459,56 @@ fn build_runtime(
             let adapter = qing_delivery::adapters::xianyu::adapter::XianyuAdapter::new();
             let transport: std::sync::Arc<dyn supervisor::AccountTransport> =
                 std::sync::Arc::new(adapter.clone());
-            let handles =
-                supervisor::spawn(db.clone(), key.clone(), adapter.clone(), Some(transport));
-            let authz = AuthorizationService::new(db.clone(), key.clone(), adapter.clone());
+            // 003 安全验证:浏览器可用才构造服务(缺失如实报不支持,FR-008)
+            let verification = build_verification(db.clone(), key, data_root);
+            let authz = AuthorizationService::new(
+                db.clone(),
+                key.clone(),
+                adapter.clone(),
+                // 004:资料服务(首拉依赖验证服务句柄;风控转 003)
+                Some(std::sync::Arc::new(
+                    qing_delivery::application::accounts::profile::ProfileService::new(
+                        db.clone(),
+                        key.clone(),
+                        verification.clone(),
+                    ),
+                )),
+            );
             authz.spawn();
+            let browser_close = verification_browser(db.clone(), key, data_root);
+            // 003 安全验证:浏览器可用才构造服务(缺失如实报不支持,FR-008)
+            if let Some(v) = verification.as_ref() {
+                let probe = v.clone();
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        tick.tick().await;
+                        probe.probe_and_close_issues().await;
+                    }
+                });
+            }
+            let handles = supervisor::spawn(
+                db.clone(),
+                key.clone(),
+                adapter.clone(),
+                Some(transport),
+                verification.clone(),
+            );
             let manual: std::sync::Arc<dyn ManualOps> = handles.manual.clone();
             let item_sync: std::sync::Arc<
                 dyn qing_delivery::application::ports::platform::ItemSyncDriver,
             > = std::sync::Arc::new(adapter);
             let stop = async move {
                 handles.stop().await;
+                if let Some(m) = browser_close {
+                    m.close_all().await; // SC-303 退出清理
+                }
             };
             (
                 Some(manual),
                 Some(authz as std::sync::Arc<dyn QrDriver>),
                 Some(item_sync),
+                verification,
                 Some(Box::pin(stop)),
             )
         }
@@ -487,17 +525,18 @@ fn build_mock_runtime(
     Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
     Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
     Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
+    Option<std::sync::Arc<qing_delivery::application::verification::service::VerificationService>>,
     Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 ) {
     use qing_delivery::application::manual::actions::ManualOps;
     use qing_delivery::runtime::supervisor;
     let adapter = qing_delivery::adapters::mock::fake::FakeAdapter::new();
-    let handles = supervisor::spawn(db.clone(), key.clone(), adapter, None);
+    let handles = supervisor::spawn(db.clone(), key.clone(), adapter, None, None);
     let manual: std::sync::Arc<dyn ManualOps> = handles.manual.clone();
     let stop = async move {
         handles.stop().await;
     };
-    (Some(manual), None, None, Some(Box::pin(stop)))
+    (Some(manual), None, None, None, Some(Box::pin(stop)))
 }
 
 #[cfg(not(feature = "dev-fixtures"))]
@@ -509,10 +548,11 @@ fn build_mock_runtime(
     Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
     Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
     Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
+    Option<std::sync::Arc<qing_delivery::application::verification::service::VerificationService>>,
     Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 ) {
     // 无 dev-fixtures 的构建不可能进入 mock 分支(启动参数已拒绝)
-    (None, None, None, None)
+    (None, None, None, None, None)
 }
 
 fn check_profile_marker(data_dir: &DataDir, profile: ExecutionProfile) -> std::io::Result<()> {
@@ -531,4 +571,123 @@ fn check_profile_marker(data_dir: &DataDir, profile: ExecutionProfile) -> std::i
     let mut f = std::fs::File::create(&marker)?;
     f.write_all(wanted.as_bytes())?;
     f.sync_all()
+}
+
+// ---------- 003 安全验证构造(T011) ----------
+
+/// live 凭证回写出口:保存新 jar(现加密路径)→ epoch+1 → 状态置 offline
+/// (值守循环下个 tick 以新凭证重连);失败保留旧值(FR-014)。
+struct LiveCredentialSink {
+    db: DbThread,
+    key: qing_delivery::adapters::windows::keys::DataKey,
+}
+
+impl qing_delivery::application::verification::service::CredentialSink for LiveCredentialSink {
+    fn save_and_rotate(&self, account_id: &str, cookie_jar: &str) -> Result<(), String> {
+        let account = account_id.to_string();
+        let jar = cookie_jar.to_string();
+        let key = self.key.clone();
+        let db = self.db.clone();
+        // db.call 需要异步上下文:用 handle 在同步出口内阻塞一次(验证会话任务内调用)
+        let tb = tokio::runtime::Handle::try_current().map_err(|e| format!("无运行时句柄:{e}"))?;
+        tb.block_on(async move {
+            let (account2, jar2, key2) = (account.clone(), jar.clone(), key);
+            db.call(move |conn| {
+                let cur: Option<i64> = conn
+                    .query_row(
+                        "SELECT generation FROM account_credentials WHERE account_id = ?1",
+                        rusqlite::params![account2],
+                        |r| r.get(0),
+                    )
+                    .map(|v: Option<i64>| v)
+                    .unwrap_or(None);
+                let next_gen = cur.unwrap_or(0) + 1;
+                qing_delivery::adapters::sqlite::repos::credentials::save(
+                    conn,
+                    &account,
+                    &key2.key,
+                    &key2.key_id,
+                    &jar2,
+                    next_gen,
+                )?;
+                conn.execute(
+                    "UPDATE accounts SET credential_epoch = credential_epoch + 1,
+                         status = 'offline', version = version + 1, updated_at = ?2
+                     WHERE id = ?1",
+                    rusqlite::params![account, qing_delivery::domain::time_util::utc_now_ms()],
+                )?;
+                Ok::<_, rusqlite::Error>(())
+            })
+            .await
+            .map_err(|e| format!("db:{e}"))?
+            .map_err(|e| format!("凭证保存失败:{e}"))
+        })
+    }
+
+    fn probe_recovered(&self, account_id: &str) -> bool {
+        // 恢复判定:值守循环已用新凭证重连(状态回到 online)
+        let db = self.db.clone();
+        let account = account_id.to_string();
+        let Ok(h) = tokio::runtime::Handle::try_current() else {
+            return false;
+        };
+        let result = h.block_on(async move {
+            db.call(move |conn| {
+                conn.query_row(
+                    "SELECT status FROM accounts WHERE id = ?1",
+                    rusqlite::params![account],
+                    |r| r.get::<_, String>(0),
+                )
+            })
+            .await
+        });
+        matches!(result, Ok(Ok(status)) if status == "online")
+    }
+}
+
+/// 构造验证服务(浏览器可用时;不可用返回 None,FR-008 如实)。
+#[allow(clippy::too_many_arguments)]
+fn build_verification(
+    db: DbThread,
+    key: &qing_delivery::adapters::windows::keys::DataKey,
+    data_root: &std::path::Path,
+) -> Option<std::sync::Arc<qing_delivery::application::verification::service::VerificationService>>
+{
+    use qing_delivery::adapters::browser::cdp::CdpVerifyDriver;
+    use qing_delivery::adapters::browser::manager::{BrowserInstancePolicy, BrowserManager};
+    use qing_delivery::application::verification::service::{
+        CredentialSink, VerificationPolicy, VerificationService,
+    };
+
+    let manager = match BrowserManager::new(data_root, BrowserInstancePolicy::default()) {
+        Ok(m) => std::sync::Arc::new(m),
+        Err(e) => {
+            tracing::warn!(error = %e, "浏览器不可用,安全验证自动化禁用(转人工指引)");
+            return None;
+        }
+    };
+    let driver: std::sync::Arc<dyn qing_delivery::application::verification::VerificationDriver> =
+        std::sync::Arc::new(CdpVerifyDriver::new(manager));
+    let sink: std::sync::Arc<dyn CredentialSink> = std::sync::Arc::new(LiveCredentialSink {
+        db: db.clone(),
+        key: key.clone(),
+    });
+    Some(VerificationService::new(
+        db,
+        driver,
+        sink,
+        VerificationPolicy::default(),
+    ))
+}
+
+/// 返回浏览器管理器句柄(仅用于退出清理;与 build_verification 同参保持同一实例策略——
+/// 简化实现:独立探测一次,退出清理以 close_all 语义兜底)。
+fn verification_browser(
+    _db: DbThread,
+    _key: &qing_delivery::adapters::windows::keys::DataKey,
+    _data_root: &std::path::Path,
+) -> Option<std::sync::Arc<qing_delivery::adapters::browser::manager::BrowserManager>> {
+    // 占位:实际清理经 build_verification 内 manager 的 Drop/空闲回收兜底;
+    // 独立句柄接线在 T018(队列/回收)完善时统一
+    None
 }

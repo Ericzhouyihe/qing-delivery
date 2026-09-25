@@ -6,6 +6,7 @@ import { isRecord } from "../../shared/contracts";
 import { btn } from "../../ui/dom";
 import { asyncBlock } from "../../ui/states";
 import { openConfirmFlow } from "../../ui/confirm-flow";
+import { confirmDialog } from "../../ui/modal";
 import { startTicker } from "../../ui/time";
 import { setPendingIssues } from "../../app/store";
 import { manualActionBody, type ManualAction } from "../orders/model";
@@ -19,6 +20,8 @@ export interface IssueItem {
   reasonCode: string;
   allowedActions: string[];
   createdAt: string;
+  /** 003:安全验证类携带 verification_url(json 解析后对象) */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RestoreReviewItem {
@@ -40,8 +43,19 @@ export function parseIssueItem(v: unknown): IssueItem {
     kind: String(v["category"] ?? v["kind"] ?? ""),
     reasonCode: String(v["reason"] ?? v["reason_code"] ?? ""),
     allowedActions: allowed,
-    createdAt: String(v["created_at"] ?? "")
+    createdAt: String(v["created_at"] ?? ""),
+    metadata: parseMetadata(v["metadata"])
   };
+}
+
+function parseMetadata(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export function parseRestoreReview(v: unknown): RestoreReviewItem {
@@ -55,6 +69,10 @@ export function parseRestoreReview(v: unknown): RestoreReviewItem {
 }
 
 const KIND_LABELS: Record<string, { label: string; risk: string }> = {
+  security_verification: {
+    label: "安全验证",
+    risk: "自动滑块未通过;请点击链接人工完成验证,系统将在完成后自动恢复账号。"
+  },
   delivery_unknown: {
     label: "发送结果未知",
     risk: "结果未知时系统已停止自动重发;请核对平台实际送达情况后再决定补发或终止。"
@@ -259,6 +277,26 @@ export const issuesPage: PageFactory = (root) => {
             el("span", { style: "flex:1;" })
           );
           for (const action of it.allowedActions) {
+            // 003:安全验证类动作不走订单端点
+            if (action === "open_verification") {
+              const url = (it.metadata as Record<string, unknown> | undefined)?.["verification_url"];
+              if (typeof url !== "string" || url.length === 0) continue; // 无链接不渲染按钮
+              const openBtn = btn("打开验证页", { variant: "primary" });
+              openBtn.addEventListener("click", () => window.open(url, "_blank", "noopener"));
+              item.append(openBtn);
+              continue;
+            }
+            if (action === "resolve") {
+              const resolveBtn = btn("我已处理", { variant: "secondary" });
+              resolveBtn.addEventListener("click", () => {
+                // 恢复检测由服务 60s 周期自动执行;这里仅尽快刷新界面
+                resolveBtn.disabled = true;
+                resolveBtn.textContent = "等待恢复检测…";
+                window.setTimeout(() => block.reload(), 60_000);
+              });
+              item.append(resolveBtn);
+              continue;
+            }
             const meta2 = ACTION_LABELS[action];
             if (meta2 === undefined) continue;
             const actionBtn = btn(meta2.label, { variant: meta2.danger ? "danger" : "secondary" });

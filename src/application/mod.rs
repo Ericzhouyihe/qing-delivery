@@ -12,3 +12,5 @@ pub mod jobs;
 pub mod manual;
 pub mod ports;
 pub mod recovery;
+pub mod stats;
+pub mod verification;

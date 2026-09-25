@@ -120,7 +120,7 @@ async fn dashboard_增量字段_播种后计数正确() {
     let cookie = login_session(&app).await;
 
     let now = qing_delivery::domain::time_util::utc_now_ms();
-    let today = now - 3_600_000; // 一小时前,稳落在本地自然日内
+    let today = now - 60_000; // 一分钟前,稳落在本地自然日内
 
     app.db
         .call(move |conn| {

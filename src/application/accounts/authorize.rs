@@ -36,15 +36,23 @@ pub struct AuthorizationService {
     db: DbThread,
     key: DataKey,
     adapter: XianyuAdapter,
+    /// 004:资料服务(授权完成后异步首拉;FR-001)
+    profile: Option<std::sync::Arc<crate::application::accounts::profile::ProfileService>>,
     flows: tokio::sync::Mutex<HashMap<String, FlowState>>,
 }
 
 impl AuthorizationService {
-    pub fn new(db: DbThread, key: DataKey, adapter: XianyuAdapter) -> Arc<Self> {
+    pub fn new(
+        db: DbThread,
+        key: DataKey,
+        adapter: XianyuAdapter,
+        profile: Option<std::sync::Arc<crate::application::accounts::profile::ProfileService>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             db,
             key,
             adapter,
+            profile,
             flows: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
@@ -137,6 +145,19 @@ impl AuthorizationService {
                         .adapter
                         .attach(&account_id, &cookie_jar_json, &unb, cred_generation)
                         .await;
+                    // 004 FR-001:首拉资料(异步,失败仅日志不阻塞接入)
+                    if let Some(profile) = self.profile.clone() {
+                        let acc = account_id.clone();
+                        tokio::spawn(async move {
+                            match profile.refresh(&acc).await {
+                                Ok(crate::application::accounts::profile::ProfileRefresh::Updated { nickname, .. }) => {
+                                    tracing::info!(account = %acc, nickname, "账号资料首拉完成");
+                                }
+                                Ok(other) => tracing::info!(account = %acc, ?other, "资料首拉未更新(可手动刷新)"),
+                                Err(e) => tracing::warn!(account = %acc, error = %e, "资料首拉失败"),
+                            }
+                        });
+                    }
                 }
                 self.flows.lock().await.remove(&qr_id);
             }

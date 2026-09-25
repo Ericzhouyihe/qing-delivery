@@ -65,3 +65,8 @@ export function httpPost<T>(path: string, body?: unknown, signal?: AbortSignal):
 export function httpPut<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   return httpRequest<T>(path, { method: "PUT", body, signal });
 }
+
+/** 004:PATCH 别名(备注等局部更新)。 */
+export function httpPatch<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return httpRequest<T>(path, { method: "PATCH", body, signal });
+}

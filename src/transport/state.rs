@@ -154,6 +154,9 @@ pub struct AppStateInner {
         Option<std::sync::Arc<dyn crate::application::accounts::authorize::QrDriver>>,
     /// live 构建的商品同步驱动(真实平台在售列表);None 时端点明确报不支持
     pub item_sync: Option<std::sync::Arc<dyn crate::application::ports::platform::ItemSyncDriver>>,
+    /// 003 安全验证处置服务;None(无浏览器/mock)时端点如实报不支持
+    pub verification:
+        Option<std::sync::Arc<crate::application::verification::service::VerificationService>>,
     pub anonymous_csrf: AnonymousCsrf,
     pub login_limiter: LoginLimiter,
     pub stopping: AtomicBool,
@@ -179,6 +182,9 @@ impl AppState {
             std::sync::Arc<dyn crate::application::accounts::authorize::QrDriver>,
         >,
         item_sync: Option<std::sync::Arc<dyn crate::application::ports::platform::ItemSyncDriver>>,
+        verification: Option<
+            std::sync::Arc<crate::application::verification::service::VerificationService>,
+        >,
         config: ServeConfig,
         key: DataKey,
     ) -> Self {
@@ -193,6 +199,7 @@ impl AppState {
                 manual,
                 authorization,
                 item_sync,
+                verification,
                 db,
                 config,
                 key,

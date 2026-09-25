@@ -28,8 +28,8 @@ pub enum MtopError {
     #[error("登录会话失效:{0}")]
     SessionExpired(String),
     /// 风控/滑块/人脸:返回验证地址,冷却后人工恢复
-    #[error("需要平台验证:{0}")]
-    Verification(String),
+    #[error("需要平台验证:{ret}")]
+    Verification { url: Option<String>, ret: String },
     #[error("业务拒绝:{0}")]
     Biz(String),
     #[error("系统错误:{0}")]
@@ -50,7 +50,7 @@ impl MtopError {
         match self {
             MtopError::TokenExpired => P::SigningTokenExpired,
             MtopError::SessionExpired(_) => P::SessionExpired,
-            MtopError::Verification(_) => P::VerificationRequired,
+            MtopError::Verification { .. } => P::VerificationRequired,
             MtopError::Biz(m) => P::BusinessRejected(m.clone()),
             MtopError::System(m) => P::BusinessRejected(format!("FAIL_SYS:{m}")),
             MtopError::RateLimited => P::RateLimited,
@@ -77,7 +77,10 @@ pub fn classify_ret(ret: &str) -> Result<(), MtopError> {
         || ret.contains("punish")
         || ret.contains("x5secdata")
     {
-        return Err(MtopError::Verification(ret.to_string()));
+        return Err(MtopError::Verification {
+            url: None,
+            ret: ret.to_string(),
+        });
     }
     if ret.contains("session_expired")
         || ret.contains("sid_invalid")
@@ -302,6 +305,11 @@ fn classify_response(parsed: &Value) -> Result<(), MtopError> {
     }
     for ret in rets {
         if let Some(s) = ret.as_str() {
+            // 风控分支补充验证 URL(gotoUrl 等字段,003 D2;提取失败仍触发,url=None)
+            if let Err(MtopError::Verification { ret, .. }) = classify_ret(s) {
+                let url = crate::application::verification::extract_verification_url(parsed);
+                return Err(MtopError::Verification { url, ret });
+            }
             classify_ret(s)?;
         }
     }
@@ -347,6 +355,81 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+impl MtopClient {
+    /// 004:GET 型调用(user.page.nav 等 query 签名接口,研究 D1)。
+    /// 签名 data 为固定 `{"%40user%7Eid":...}` 形态时直接传空 JSON;额外 query 键原样附加。
+    pub async fn call_get(
+        &self,
+        api: &str,
+        extra_query: &[(&str, &str)],
+        referer: &str,
+    ) -> Result<Value, MtopError> {
+        let version = "1.0";
+        let endpoint = format!("{h5}{api}/{version}/", h5 = self.h5_base);
+        let host = url::Url::parse(&self.h5_base)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "h5api.m.goofish.com".into());
+        let data_json = "{}";
+        let mut attempt = 0usize;
+        loop {
+            let (t, sign, cookie_header) = {
+                let jar = self.jar.lock().await;
+                let t = crate::domain::time_util::utc_now_ms().to_string();
+                let sign = sign_request(&jar.sign_token(), &t, SIGN_APP_KEY, data_json);
+                (t, sign, jar.header_value(&host, "/"))
+            };
+            let mut query = build_query(api, &t, &sign);
+            for (k, v) in extra_query {
+                query.push((*k, (*v).to_string()));
+            }
+            let mut request = self
+                .http
+                .get(&endpoint)
+                .query(&query)
+                .header(reqwest::header::ORIGIN, "https://www.goofish.com")
+                .header(reqwest::header::REFERER, referer)
+                .header(
+                    reqwest::header::USER_AGENT,
+                    crate::adapters::xianyu::ws::real::BROWSER_UA,
+                );
+            if !cookie_header.is_empty() {
+                request = request.header(reqwest::header::COOKIE, cookie_header);
+            }
+            let response = match request.send().await {
+                Ok(r) => r,
+                Err(e) if e.is_timeout() => return Err(MtopError::Timeout),
+                Err(e) => return Err(MtopError::Network(e.to_string())),
+            };
+            let status = response.status();
+            {
+                let mut jar = self.jar.lock().await;
+                jar.absorb_response(&host, response.headers());
+            }
+            let text = response
+                .text()
+                .await
+                .map_err(|e| MtopError::Network(e.to_string()))?;
+            if !status.is_success() {
+                return Err(MtopError::System(format!("HTTP {status}")));
+            }
+            let parsed: Value = serde_json::from_str(&text)
+                .map_err(|e| MtopError::Malformed(format!("非 JSON 响应:{e}")))?;
+            match classify_response(&parsed) {
+                Ok(()) => return Ok(parsed.get("data").cloned().unwrap_or(Value::Null)),
+                Err(MtopError::TokenExpired) => {
+                    attempt += 1;
+                    if attempt >= TOKEN_RETRY_MAX {
+                        self.jar.lock().await.clear_sign_cookies();
+                        return Err(MtopError::TokenExpired);
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,7 +444,7 @@ mod tests {
         ));
         assert!(matches!(
             classify_ret("FAIL_SYS_USER_VALIDATE::rgv587"),
-            Err(MtopError::Verification(_))
+            Err(MtopError::Verification { .. })
         ));
         assert!(matches!(
             classify_ret("FAIL_SYS_SESSION_EXPIRED::session过期"),

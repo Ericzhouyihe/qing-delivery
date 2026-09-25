@@ -44,8 +44,18 @@ pub fn router(state: AppState) -> Router {
             post(crate::transport::accounts_api::control_account),
         )
         .route(
+            "/accounts/{account_id}",
+            axum::routing::delete(crate::transport::accounts_api::delete_account)
+                .patch(crate::transport::accounts_api::patch_account),
+        )
+        .route(
+            "/accounts/{account_id}/profile-fetch",
+            post(crate::transport::accounts_api::fetch_account_profile),
+        )
+        .route(
             "/accounts/{account_id}/verification",
-            post(crate::transport::accounts_api::start_verification),
+            get(crate::transport::accounts_api::get_verification)
+                .post(crate::transport::accounts_api::start_verification),
         )
         .route(
             "/accounts/qr-sessions",
@@ -95,6 +105,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/dashboard",
             get(crate::transport::dashboard_api::dashboard),
+        )
+        .route(
+            "/stats/overview",
+            get(crate::transport::stats_api::stats_overview),
         )
         .route(
             "/restore",
@@ -483,6 +497,11 @@ async fn capabilities_handler(State(state): SharedState, headers: HeaderMap) -> 
             "unicode_scalars": 1000,
             "utf8_bytes": 4000,
             "effective_source": "product"
+        },
+        "browser": {
+            "available": crate::adapters::browser::manager::detect_browser().is_ok(),
+            "engine": "system-chromium",
+            "reason": crate::adapters::browser::manager::detect_browser().err().map(|e| e.to_string()),
         },
         "execution_profile": profile
     }))

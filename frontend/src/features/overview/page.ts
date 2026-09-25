@@ -1,15 +1,26 @@
-/** 概览工作台(US2,T022-T025):统计卡下钻、恢复横幅、账号速览、
- *  最近订单/待处理、快捷动作;30s 可见性轮询 + 手动刷新(FR-006/FR-008)。 */
+/** 运营概览(005 改版):标题区+系统状态指示、时间范围筛选(自然日对齐,默认 7天内)、
+ *  四张统计卡(区间营收+对比徽标/活跃账号/订单数/待人工处理)、营收趋势区;
+ *  既有运营区块(账号速览/最近待处理/最近订单)保留在统计区下方(FR-014)。
+ *  30s 可见性轮询 + 手动刷新按当前范围(FR-013);数值与图表原地更新(FR-015)。 */
 import { el } from "../../shared/dom";
 import { httpGet } from "../../shared/http";
-import { isRecord, parseDashboardSummary, parsePage, type DashboardSummary } from "../../shared/contracts";
-import { statCard } from "../../ui/dom";
+import { isRecord, parsePage, parseStatsOverview, type StatsOverview } from "../../shared/contracts";
 import { badgeEl, statusPairEl, accountBadge } from "../../ui/badge";
+import { renderTrendChart } from "../../ui/chart";
 import { asyncBlock } from "../../ui/states";
 import { startPoll } from "../../ui/poll";
 import { formatAbsolute, formatRelative, startTicker } from "../../ui/time";
 import { setPendingIssues } from "../../app/store";
-import { deriveStats, sortQuickAccounts, type QuickAccount } from "./model";
+import {
+  DEFAULT_PRESET,
+  PRESET_OPTIONS,
+  deriveCards,
+  resolveCustomRange,
+  resolvePresetRange,
+  sortQuickAccounts,
+  type QuickAccount,
+  type RangePreset
+} from "./model";
 import type { PageFactory } from "../../app/page";
 
 interface RecentOrder {
@@ -76,17 +87,176 @@ function parseIssue(v: unknown): RecentIssue {
 }
 
 export const overviewPage: PageFactory = (root) => {
+  // ---- 标题区(FR-001):标题 + 副文案 + 系统运行状态指示 ----
+  const statusChip = el("span", { class: "ov-status" }, el("span", { class: "dot" }), el("span", { class: "ov-status-text" }, "—"));
+  const header = el(
+    "div",
+    { class: "ov-header" },
+    el(
+      "div",
+      {},
+      el("h1", { class: "ov-title" }, "运营概览"),
+      el("p", { class: "ov-sub muted" }, "欢迎回来,以下是店铺的实时经营数据。")
+    ),
+    statusChip
+  );
+
   const bannerArea = el("div", {});
-  const statArea = el("div", { class: "stat-grid" });
-  const actionsArea = el("div", { class: "quick-actions", style: "margin-bottom:16px;" });
+
+  // ---- 时间范围筛选(FR-002/FR-009):预设自然日对齐,默认 7天内;自定义起止日期 ----
+  const chipsRow = el("div", { class: "range-chips", role: "tablist" });
+  const chipButtons = new Map<RangePreset, HTMLButtonElement>();
+  let currentPreset: RangePreset = DEFAULT_PRESET;
+  /** 非空表示自定义区间生效(FR-009);预设点击即清除。 */
+  let customRange: { from: number; to: number } | null = null;
+
+  const customStart = el("input", { type: "date", "aria-label": "开始日期" }) as HTMLInputElement;
+  const customEnd = el("input", { type: "date", "aria-label": "结束日期" }) as HTMLInputElement;
+  const customError = el("span", { class: "range-error" }, "");
+  const customPanel = el(
+    "span",
+    { class: "range-custom" },
+    el("span", { class: "muted" }, "起"),
+    customStart,
+    el("span", { class: "muted" }, "止"),
+    customEnd,
+    el("button", { class: "btn btn-primary btn-sm", type: "button" }, "应用"),
+    el("button", { class: "btn btn-secondary btn-sm", type: "button" }, "取消"),
+    customError
+  );
+  customPanel.hidden = true;
+  const [applyBtn, cancelBtn] = customPanel.querySelectorAll("button");
+
+  const customChip = el("button", { class: "chip", type: "button", role: "tab" }, "自定义") as HTMLButtonElement;
+  for (const opt of PRESET_OPTIONS) {
+    const btn = el("button", { class: "chip", type: "button", role: "tab" }, opt.label) as HTMLButtonElement;
+    btn.addEventListener("click", () => {
+      const changed = currentPreset !== opt.key || customRange !== null;
+      currentPreset = opt.key;
+      customRange = null;
+      customPanel.hidden = true;
+      syncChipActive();
+      if (changed) void loadStats();
+    });
+    chipButtons.set(opt.key, btn);
+    chipsRow.append(btn);
+  }
+  chipsRow.append(customChip, customPanel);
+
+  const syncChipActive = (): void => {
+    for (const [key, btn] of chipButtons) {
+      const active = customRange === null && key === currentPreset;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    customChip.classList.toggle("active", customRange !== null);
+    customChip.setAttribute("aria-selected", customRange !== null ? "true" : "false");
+  };
+  syncChipActive();
+
+  customChip.addEventListener("click", () => {
+    customPanel.hidden = !customPanel.hidden;
+    customError.textContent = "";
+    if (!customPanel.hidden && customStart.value === "" && customEnd.value === "") {
+      const { from } = resolvePresetRange(DEFAULT_PRESET, Date.now());
+      const d = new Date(from);
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      customStart.value = iso;
+      customEnd.value = iso;
+    }
+  });
+  applyBtn?.addEventListener("click", () => {
+    const range = resolveCustomRange(customStart.value, customEnd.value);
+    if (range === null) {
+      // 拦截:提示且不发起请求、不改变当前展示(FR-009)
+      customError.textContent = "区间无效:结束不得早于开始,跨度最大 92 天";
+      return;
+    }
+    customError.textContent = "";
+    customRange = range;
+    customPanel.hidden = true;
+    syncChipActive();
+    void loadStats();
+  });
+  cancelBtn?.addEventListener("click", () => {
+    customError.textContent = "";
+    customPanel.hidden = true;
+  });
+
+  // ---- 四张统计卡(FR-003~006):数值节点原地更新,轮询不重建 ----
+  const statArea = el("div", { class: "stat-grid ov-grid" });
+  const revValue = el("span", {}, "—");
+  const revBadge = el("span", { class: "ov-badge" });
+  revBadge.hidden = true;
+  const revValueRow = el("div", { class: "stat-value ov-value-row" }, revValue, revBadge);
+  const acctValue = el("span", {}, "—");
+  const orderValue = el("span", {}, "—");
+  const pendingValue = el("span", {}, "—");
+  const statCard = (
+    icon: string,
+    label: string,
+    valueNode: HTMLElement,
+    opts: { href?: string; sub?: string } = {}
+  ): HTMLElement => {
+    const card = el("div", { class: "stat-card ov-card" });
+    card.append(el("div", { class: "stat-label" }, el("span", { class: "ov-ico", "aria-hidden": "true" }, icon), label));
+    card.append(valueNode);
+    if (opts.sub !== undefined) card.append(el("div", { class: "stat-sub muted" }, opts.sub));
+    if (opts.href !== undefined) {
+      const link = el("a", { class: "stat-link", href: opts.href }, "查看 →");
+      card.append(link);
+      card.classList.add("stat-clickable");
+    }
+    return card;
+  };
+  const revenueCard = statCard("¥", "累计营收", revValueRow, { sub: "所选区间 · CNY" });
+  const accountsCard = statCard("👥", "活跃账号 / 总数", el("div", { class: "stat-value" }, acctValue), {
+    href: "/accounts",
+    sub: "在线 / 总数"
+  });
+  const ordersCard = statCard("🛒", "订单数", el("div", { class: "stat-value" }, orderValue), {
+    href: "/orders",
+    sub: "所选区间付款订单"
+  });
+  const pendingCard = statCard("🚩", "待人工处理", el("div", { class: "stat-value" }, pendingValue), {
+    href: "/issues",
+    sub: "待处理工作台"
+  });
+  statArea.append(revenueCard, accountsCard, ordersCard, pendingCard);
+
+  // ---- 营收趋势区(FR-007/FR-008):图表由 renderTrend 渲染 ----
+  const trendContent = el("div", { class: "trend-content" }, el("p", { class: "muted" }, "加载中…"));
+  const trendSection = el(
+    "section",
+    { class: "card trend-card" },
+    el("h2", { class: "card-title" }, "营收趋势分析"),
+    el("p", { class: "trend-sub muted" }, "所选时间范围内的销售额走势"),
+    trendContent
+  );
+
+  const refreshBtn = el("button", { class: "btn btn-secondary btn-sm" }, "↻ 刷新");
+  const refreshHint = el("span", { class: "muted", style: "font-size:var(--text-xs);" }, "");
+  const actionsRow = el(
+    "div",
+    { class: "ov-toolbar" },
+    refreshBtn,
+    refreshHint,
+    el("span", { class: "ov-toolbar-spacer" }),
+    el("a", { class: "btn btn-primary btn-sm", href: "/accounts" }, "＋ 扫码接入账号"),
+    el("a", { class: "btn btn-secondary btn-sm", href: "/catalog" }, "⟳ 同步商品"),
+    el("a", { class: "btn btn-secondary btn-sm", href: "/orders" }, "⇄ 打开订单中心")
+  );
+
   const quickView = el("div", {});
   const ordersView = el("div", {});
   const issuesView = el("div", {});
-  const refreshBtn = el("button", { class: "btn btn-secondary btn-sm" }, "↻ 刷新");
-  const refreshHint = el("span", { class: "muted", style: "font-size:var(--text-xs);" }, "");
-
-  root.append(bannerArea, statArea, actionsArea, refreshBtn, refreshHint);
   root.append(
+    header,
+    bannerArea,
+    chipsRow,
+    statArea,
+    trendSection,
+    actionsRow,
     el(
       "div",
       { style: "display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start;" },
@@ -96,18 +266,6 @@ export const overviewPage: PageFactory = (root) => {
     el("section", { class: "card" }, el("h2", { class: "card-title" }, "最近订单"), ordersView)
   );
 
-  // ---- 统计卡:固定四张,数值节点原地更新,轮询不重建(US2-6 无布局跳变) ----
-  const onlineValue = el("span", {}, "—");
-  const ordersValue = el("span", {}, "—");
-  const deliveredValue = el("span", {}, "—");
-  const pendingValue = el("span", {}, "—");
-  statArea.append(
-    statCard("在线账号 / 总数", onlineValue, { href: "/accounts", sub: "账号管理" }),
-    statCard("今日订单", ordersValue, { href: "/orders", sub: "本地时区自然日" }),
-    statCard("今日已自动交付", deliveredValue, { href: "/orders", sub: "本地时区自然日" }),
-    statCard("待人工处理", pendingValue, { href: "/issues", tone: "warning", sub: "待处理工作台" })
-  );
-  const pendingCard = statArea.lastElementChild as HTMLElement;
   const emptyQuickView = (): HTMLElement =>
     el(
       "div",
@@ -126,44 +284,17 @@ export const overviewPage: PageFactory = (root) => {
       el("div", {}, "暂无订单;规则配置完成后,付款订单会出现在这里")
     );
 
-  actionsArea.append(
-    el("a", { class: "btn btn-primary btn-sm", href: "/accounts" }, "＋ 扫码接入账号"),
-    el("a", { class: "btn btn-secondary btn-sm", href: "/catalog" }, "⟳ 同步商品"),
-    el("a", { class: "btn btn-secondary btn-sm", href: "/orders" }, "⇄ 打开订单中心")
-  );
-
-  const renderStats = (d: DashboardSummary): void => {
-    const s = deriveStats(d);
-    onlineValue.textContent = `${s.accountsOnline} / ${s.accountsTotal}`;
-    if (s.ordersToday === null) {
-      ordersValue.textContent = "—";
-      ordersValue.title = "统计不可用(服务版本过旧)";
-    } else {
-      ordersValue.textContent = String(s.ordersToday);
-      ordersValue.title = "";
-    }
-    if (s.deliveredToday === null) {
-      deliveredValue.textContent = "—";
-      deliveredValue.title = "统计不可用(服务版本过旧)";
-    } else {
-      deliveredValue.textContent = String(s.deliveredToday);
-      deliveredValue.title = "";
-    }
-    pendingValue.textContent = String(s.pending);
-    pendingCard.classList.toggle("tone-warning", s.pending > 0);
-    setPendingIssues(s.pending);
-
-    // 横幅(US2/FR-007):恢复隔离置顶,服务停止次之
+  // ---- 统计渲染:四卡 + 状态指示 + 告警横幅(恢复隔离置顶,停止次之) ----
+  const renderBanner = (s: StatsOverview): void => {
     bannerArea.replaceChildren();
-    if (s.restoreActive) {
-      const go = el("a", { href: "/issues" }, "去核对 →");
+    if (s.restore) {
       bannerArea.append(
         el(
           "div",
           { class: "banner banner-warning", role: "alert" },
           el("strong", {}, "恢复隔离中"),
-          el("span", {}, `待核对 ${s.restoreUnresolved} 笔;逐单核对完成后才恢复正常处理`),
-          go
+          el("span", {}, `待核对 ${s.restore.unresolved_count} 笔;逐单核对完成后才恢复正常处理`),
+          el("a", { href: "/issues" }, "去核对 →")
         )
       );
     }
@@ -174,8 +305,111 @@ export const overviewPage: PageFactory = (root) => {
     }
   };
 
-  const loadDashboard = async (): Promise<void> => {
-    renderStats(parseDashboardSummary(await httpGet("/api/v1/dashboard")));
+  const renderStatus = (s: StatsOverview): void => {
+    const textEl = statusChip.querySelector(".ov-status-text") as HTMLElement;
+    statusChip.classList.remove("state-stopping", "state-restore");
+    if (s.stopping) {
+      statusChip.classList.add("state-stopping");
+      textEl.textContent = "服务正在停止";
+    } else if (s.restore) {
+      statusChip.classList.add("state-restore");
+      textEl.textContent = `恢复隔离中 · 待核对 ${s.restore.unresolved_count} 笔`;
+    } else {
+      textEl.textContent = "系统正常运行";
+    }
+  };
+
+  const renderCards = (s: StatsOverview): void => {
+    const c = deriveCards(s);
+    revValue.textContent = c.revenueText;
+    if (c.changePercent === null) {
+      revBadge.hidden = true;
+    } else {
+      revBadge.hidden = false;
+      revBadge.textContent = c.changeText;
+      revBadge.classList.remove("trend-up", "trend-down", "trend-flat");
+      revBadge.classList.add(`trend-${c.changeTrend}`);
+    }
+    acctValue.textContent = `${c.accountsOnline} / ${c.accountsTotal}`;
+    orderValue.textContent = String(c.orderCount);
+    pendingValue.textContent = String(c.pending);
+    pendingCard.classList.toggle("tone-warning-card", c.pending > 0);
+    setPendingIssues(c.pending);
+  };
+
+  const renderTrend = (s: StatsOverview): void => {
+    // 原地替换图表内容,布局不跳动(FR-015);空态语义(FR-008)
+    trendContent.replaceChildren();
+    const hasData = s.trend.some((p) => p.minor_units > 0);
+    if (!hasData) {
+      trendContent.append(
+        el(
+          "div",
+          { class: "empty-state" },
+          el("div", { class: "empty-ico" }, "🛒"),
+          el("div", {}, "暂无营收数据"),
+          el("div", { class: "muted" }, "所选时间范围内暂无订单记录")
+        )
+      );
+      return;
+    }
+    trendContent.append(
+      renderTrendChart(
+        s.trend.map((p) => ({
+          bucketStart: p.bucket_start,
+          minorUnits: p.minor_units,
+          orderCount: p.order_count,
+          granularity: s.range.granularity
+        }))
+      )
+    );
+  };
+
+  const renderStats = (s: StatsOverview): void => {
+    renderCards(s);
+    renderStatus(s);
+    renderBanner(s);
+    renderTrend(s);
+  };
+
+  const currentQuery = (): string => {
+    // 自定义生效时按自定义区间,否则按当前预设(轮询/刷新均保持所选,FR-013)
+    const { from, to } = customRange ?? resolvePresetRange(currentPreset, Date.now());
+    return `/api/v1/stats/overview?from=${from}&to=${to}`;
+  };
+
+  // 加载序号守卫:响应返回时序号非最新则丢弃(Constitution IV「过期响应」;
+  // spec Edge Case:切换范围后旧范围数据不得覆盖新范围,FR-013)。
+  let statsSeq = 0;
+  const loadStats = async (): Promise<void> => {
+    const seq = ++statsSeq;
+    const query = currentQuery();
+    let data: StatsOverview;
+    try {
+      data = parseStatsOverview(await httpGet(query));
+    } catch {
+      if (seq !== statsSeq) return; // 已被更新的加载取代
+      renderStatsError();
+      return;
+    }
+    if (seq !== statsSeq) return; // 过期响应:不渲染
+    renderStats(data);
+  };
+
+  /** 查询失败占位:统计卡保留上次值,趋势区提示可重试(FR-008/US2-AC4)。 */
+  const renderStatsError = (): void => {
+    trendContent.replaceChildren();
+    const retry = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, "重试");
+    retry.addEventListener("click", () => void loadStats());
+    trendContent.append(
+      el(
+        "div",
+        { class: "empty-state" },
+        el("div", { class: "empty-ico" }, "⚠️"),
+        el("div", {}, "统计暂时不可用"),
+        retry
+      )
+    );
   };
 
   const loadQuickView = (): void => {
@@ -231,7 +465,7 @@ export const overviewPage: PageFactory = (root) => {
           el("td", { class: "num" }, o.amount_minor === null ? "—" : `${(o.amount_minor / 100).toFixed(2)}`),
           el("td", {}, statusPairEl(o.delivery_state, o.confirmation_state))
         );
-        // 下钻订单中心并聚焦该单(US2-2/SC-203)
+        // 下钻订单中心并聚焦该单
         tr.addEventListener("click", () => {
           history.pushState(null, "", `/orders?focus=${o.id}`);
           window.dispatchEvent(new PopStateEvent("popstate"));
@@ -266,13 +500,15 @@ export const overviewPage: PageFactory = (root) => {
       return el("div", {}, list, more);
     }, { empty: emptyIssuesView });
 
+  // ===== 既有辅助(账号速览排序)已由 ./model 提供 =====
   let stopTicker: (() => void) | null = null;
-  const poll = startPoll(loadDashboard, 30_000);
+  const poll = startPoll(loadStats, 30_000);
+  loadStats();
   loadQuickView();
   loadOrders();
   loadIssues();
   refreshBtn.addEventListener("click", () => {
-    void loadDashboard();
+    void loadStats();
     loadQuickView();
     loadOrders();
     loadIssues();

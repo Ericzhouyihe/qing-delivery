@@ -15,3 +15,5 @@ pub mod manual_actions;
 pub mod orders;
 pub mod rules;
 pub mod sessions;
+pub mod stats;
+pub mod verification;

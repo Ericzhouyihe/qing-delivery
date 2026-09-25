@@ -28,7 +28,7 @@ pub enum RestoreError {
     Sqlite(#[from] rusqlite::Error),
 }
 
-pub const SUPPORTED_SCHEMA: i64 = 1;
+pub const SUPPORTED_SCHEMA: i64 = 3;
 
 pub struct RestoreReport {
     pub manifest: ArchiveManifest,
@@ -232,7 +232,7 @@ mod tests {
 
         let out = _guard.path().join("backup.qdbak");
         let manifest = create_backup(&data.root, &out).unwrap();
-        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.schema_version, 3);
         assert!(out.exists());
 
         // 恢复到新目录

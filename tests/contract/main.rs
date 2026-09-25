@@ -6,3 +6,4 @@ mod support;
 mod accounts_http;
 mod dashboard_http;
 mod foundational_http;
+mod stats_http;

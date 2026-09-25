@@ -9,4 +9,5 @@ pub mod ids;
 pub mod money;
 pub mod orders;
 pub mod sku;
+pub mod stats;
 pub mod time_util;
