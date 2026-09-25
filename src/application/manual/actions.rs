@@ -3,7 +3,7 @@
 //! 人工"已收到"只记 manual 证据,不自动平台确认;终止仅限未提交动作。
 
 use crate::adapters::sqlite::db::{DbError, DbThread};
-use crate::adapters::sqlite::repos::{accounts, deliveries, issues, manual_actions, orders};
+use crate::adapters::sqlite::repos::{accounts, cards, deliveries, issues, manual_actions, orders};
 use crate::adapters::windows::keys::DataKey;
 use crate::application::delivery::service::{DeliveryService, HandleOutcome};
 use crate::application::idempotency::{Begin, IdempotencyService};
@@ -491,6 +491,9 @@ impl<A: PlatformAdapter> ManualService<A> {
                             version = version + 1, updated_at = ?2 WHERE id = ?1",
                     rusqlite::params![delivery, utc_now_ms()],
                 )?;
+                // 卡密预留随订单终止释放(research D3:订单终态 → 释放;
+                // fixed_text 路径无预留,空操作)
+                cards::release_by_order(conn, &order)?;
                 conn.execute(
                     "UPDATE order_execution_guards SET state='terminal' WHERE order_id = ?1",
                     rusqlite::params![order],

@@ -101,6 +101,38 @@ pub fn router(state: AppState) -> Router {
             "/accounts/{account_id}/rules/{rule_id}",
             put(crate::transport::catalog_api::update_rule),
         )
+        // 卡密库存(007 contracts §1):静态段先于 {pool_id} 注册
+        .route(
+            "/card-pools",
+            get(crate::transport::cards_api::list_card_pools)
+                .post(crate::transport::cards_api::create_card_pool),
+        )
+        .route(
+            "/card-pools/batch-import",
+            post(crate::transport::cards_api::batch_import).layer(axum::extract::DefaultBodyLimit::max(
+                // 传输层护栏(远高于 2 MiB 文件上限):让应用层流式上限先触发,
+                // 以标准错误信封返回 413;处理器在读满 2 MiB 时即中止,内存有界
+                crate::application::cards::IMPORT_MAX_BYTES as usize + 8 * 1024 * 1024,
+            )),
+        )
+        .route(
+            "/card-pools/test-api",
+            post(crate::transport::cards_api::test_api),
+        )
+        .route(
+            "/card-pools/{pool_id}",
+            get(crate::transport::cards_api::get_card_pool)
+                .put(crate::transport::cards_api::update_card_pool)
+                .delete(crate::transport::cards_api::delete_card_pool),
+        )
+        .route(
+            "/card-pools/{pool_id}/append-data",
+            post(crate::transport::cards_api::append_data),
+        )
+        .route(
+            "/card-pools/{pool_id}/entries",
+            get(crate::transport::cards_api::list_entries),
+        )
         .route("/issues", get(crate::transport::manual_api::list_issues))
         .route(
             "/dashboard",

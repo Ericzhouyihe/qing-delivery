@@ -222,7 +222,13 @@ export const overviewPage: PageFactory = (root) => {
     href: "/issues",
     sub: "待处理工作台"
   });
-  statArea.append(revenueCard, accountsCard, ordersCard, pendingCard);
+  // 007 T018:第 5 张统计卡"库存卡密余量";value span 原地更新,轮询不重建 DOM
+  const stockValue = el("span", {}, "—");
+  const stockCard = statCard("▤", "库存卡密余量", el("div", { class: "stat-value" }, stockValue), {
+    href: "/cards",
+    sub: "全部启用批量组"
+  });
+  statArea.append(revenueCard, accountsCard, ordersCard, pendingCard, stockCard);
 
   // ---- 营收趋势区(FR-007/FR-008):图表由 renderTrend 渲染 ----
   const trendContent = el("div", { class: "trend-content" }, el("p", { class: "muted" }, "加载中…"));
@@ -334,6 +340,14 @@ export const overviewPage: PageFactory = (root) => {
     orderValue.textContent = String(c.orderCount);
     pendingValue.textContent = String(c.pending);
     pendingCard.classList.toggle("tone-warning-card", c.pending > 0);
+    // 库存余量:缺失显示"—"不闪 0;余量为 0 → warning 强调(复用既有卡片 tone 类)
+    if (c.stockAvailable === null) {
+      stockValue.textContent = "—";
+      stockCard.classList.remove("tone-warning-card");
+    } else {
+      stockValue.textContent = String(c.stockAvailable);
+      stockCard.classList.toggle("tone-warning-card", c.stockAvailable === 0);
+    }
     setPendingIssues(c.pending);
   };
 

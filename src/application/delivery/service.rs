@@ -3,7 +3,7 @@
 //! 网络绝不进入数据库事务;unknown 永不自动重发(宪章 I)。
 
 use crate::adapters::sqlite::db::{DbError, DbThread};
-use crate::adapters::sqlite::repos::{accounts, deliveries, issues, items, orders, rules};
+use crate::adapters::sqlite::repos::{accounts, cards, deliveries, issues, items, orders, rules};
 use crate::adapters::windows::keys::DataKey;
 use crate::application::delivery::eligibility::{self, Eligibility, EligibilityInput};
 use crate::application::ports::platform::{
@@ -15,6 +15,7 @@ use crate::domain::delivery::state::{
 };
 use crate::domain::ids;
 use crate::domain::time_util::utc_now_ms;
+use sha2::{Digest, Sha256};
 
 /// 自动重试预算:初次发送外最多 3 次,间隔 30/60/120 秒(FR-019,spec 默认值)。
 pub const MAX_AUTO_RETRIES: i64 = 3;
@@ -69,6 +70,8 @@ struct DeliveryFacts {
     restore_quarantined: bool,
     paid_at: Option<i64>,
     buyer_id: Option<String>,
+    /// 可信购买件数(卡密预留 units = 份数×件数;缺失按 1)
+    quantity: Option<i64>,
     #[allow(dead_code)]
     sku_key: Option<String>,
 }
@@ -147,6 +150,7 @@ impl<A: PlatformAdapter> DeliveryService<A> {
         let order_sku_key = snapshot_sku_key(&snapshot);
         let snapshot_paid_at = snapshot.paid_at_ms.verified().copied();
         let snapshot_buyer = snapshot.buyer_id.verified().cloned();
+        let snapshot_quantity = snapshot.quantity.verified().copied().map(|q| q as i64);
         let account_id_owned = account_id.to_string();
         let external_order = external_order_id.to_string();
         let facts = self
@@ -193,6 +197,7 @@ impl<A: PlatformAdapter> DeliveryService<A> {
                     restore_quarantined: restore_quarantined > 0,
                     paid_at: snapshot_paid_at,
                     buyer_id: snapshot_buyer,
+                    quantity: snapshot_quantity,
                     sku_key: Some(sku_key),
                 })
             })
@@ -358,7 +363,9 @@ impl<A: PlatformAdapter> DeliveryService<A> {
         Ok(())
     }
 
-    /// T2:解密规则当前版本正文 → 以快照 AAD 重新封装 → 绑定任务进入 queued。
+    /// T2:解析内容来源(research D2 ContentPlan)→ 冻结快照绑定任务进入 queued。
+    /// fixed_text:解密规则当前版本正文(既有行为,零改动);
+    /// card_pool:单事务原子预留拼接送文本,research D3 预留协议。
     async fn freeze_snapshot(
         &self,
         facts: &DeliveryFacts,
@@ -380,37 +387,222 @@ impl<A: PlatformAdapter> DeliveryService<A> {
             return Ok(true);
         }
         let rule_id = rule_id.to_string();
-        let content_pair = self
+        let loaded = self
             .db
             .call({
                 let rule_id = rule_id.clone();
-                move |conn| -> rusqlite::Result<Option<(rules::RuleContentRow, rules::RuleRow)>> {
+                move |conn| -> rusqlite::Result<LoadedSource> {
                     let rule = rules::get(conn, &rule_id)?;
-                    let Some(rule) = rule else { return Ok(None) };
-                    let content = rules::get_content(conn, &rule_id, rule.current_content_version)?;
-                    Ok(content.map(|c| (c, rule)))
+                    let Some(rule) = rule else { return Ok(LoadedSource::Missing) };
+                    let pool_binding = rule.card_pool_id.clone();
+                    match pool_binding.as_deref() {
+                        Some(pool_id) if !pool_id.is_empty() => Ok(LoadedSource::CardPool {
+                            rule,
+                            pool_id: pool_id.to_string(),
+                        }),
+                        _ => {
+                            let content =
+                                rules::get_content(conn, &rule_id, rule.current_content_version)?;
+                            match content {
+                                Some(content) => Ok(LoadedSource::FixedText { content, rule }),
+                                None => Ok(LoadedSource::Missing),
+                            }
+                        }
+                    }
                 }
             })
             .await??;
-        let Some((content, rule_row)) = content_pair else {
-            return Ok(false);
-        };
-        let plaintext = crypto::open(
-            &self.key.key,
-            &rules::rule_aad(&rule_row.id, content.content_version),
-            &content.envelope,
-        )?;
+        match loaded {
+            LoadedSource::Missing => Ok(false),
+            LoadedSource::FixedText { content, rule } => {
+                // ---- fixed_text 分支(行为与 001 完全一致)----
+                let plaintext = crypto::open(
+                    &self.key.key,
+                    &rules::rule_aad(&rule.id, content.content_version),
+                    &content.envelope,
+                )?;
+                let source = format!("rule:{rule_id}:v{}", content.content_version);
+                self.freeze_plaintext(facts, delivery_id, &rule_id, &plaintext, &content.text_digest, source)
+                    .await
+            }
+            LoadedSource::CardPool { rule, pool_id } => {
+                // ---- card_pool 分支:同一 DbThread 事务闭包内原子预留(D3)----
+                let _ = rule; // 规则行仅用于来源判定;绑定仍用 rule_id
+                let plan = self.plan_card_pool(facts, delivery_id, &pool_id).await?;
+                match plan {
+                    CardPlan::Insufficient => {
+                        // 余量不足/停用:整体回滚已完成(事务闭包内逐条预留,任一不足即回滚),
+                        // 开 stock_insufficient 事项后返回 false(不部分交付)
+                        let order_id = facts.order_id.clone();
+                        let account_id = facts.account.id.clone();
+                        let delivery = delivery_id.to_string();
+                        self.db
+                            .call(move |conn| {
+                                issues::open(
+                                    conn,
+                                    &ids::new_id("iss"),
+                                    Some(&order_id),
+                                    &account_id,
+                                    Some(&delivery),
+                                    "stock_insufficient",
+                                    "out_of_stock",
+                                    "[\"terminate\"]",
+                                )
+                            })
+                            .await??;
+                        Ok(false)
+                    }
+                    CardPlan::Entries { pool_id, cards } => {
+                        let text = cards
+                            .iter()
+                            .map(|c| c.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let source = format!(
+                            "card:{pool_id}:{}",
+                            cards
+                                .iter()
+                                .map(|c| c.id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        );
+                        let digest = hex::encode(Sha256::digest(text.as_bytes()));
+                        self.freeze_plaintext(
+                            facts,
+                            delivery_id,
+                            &rule_id,
+                            text.as_bytes(),
+                            &digest,
+                            source,
+                        )
+                        .await
+                    }
+                    CardPlan::FixedContent { pool_id, plaintext } => {
+                        // text/image 池:固定内容直接作为冻结正文(无条目预留)
+                        let source = format!("card:{pool_id}");
+                        let digest = hex::encode(Sha256::digest(&plaintext));
+                        self.freeze_plaintext(
+                            facts,
+                            delivery_id,
+                            &rule_id,
+                            &plaintext,
+                            &digest,
+                            source,
+                        )
+                        .await
+                    }
+                }
+            }
+        }
+    }
+
+    /// 卡密分支单事务计划(D3):data 池循环预留 N=件数(份数首版=1);
+    /// 任一次取不到 → 事务回滚(不部分交付)→ Insufficient;
+    /// text/image 池用固定内容;api 池暂无本地库存按不足处理
+    /// (CardSupplier 事务外取卡接线见 T011 端口;不在此处外呼网络)。
+    async fn plan_card_pool(
+        &self,
+        facts: &DeliveryFacts,
+        delivery_id: &str,
+        pool_id: &str,
+    ) -> Result<CardPlan, DeliveryError> {
+        let order_id = facts.order_id.clone();
+        let delivery = delivery_id.to_string();
+        let pool_id = pool_id.to_string();
+        let units = facts.quantity.unwrap_or(1).max(1);
+        let key = self.key.key;
+        self.db
+            .call(
+                move |conn| -> rusqlite::Result<Result<CardPlan, DeliveryError>> {
+                    let tx = conn.transaction()?;
+                    let Some(pool) = cards::get_pool(&tx, &pool_id)? else {
+                        // 引用的池不存在(删除被引用池会被拒,此处防御性安全侧处理)
+                        return Ok(Ok(CardPlan::Insufficient));
+                    };
+                    if !pool.enabled {
+                        // 停用池不预留(quickstart US1-6:转待处理,不部分交付)
+                        return Ok(Ok(CardPlan::Insufficient));
+                    }
+                    match pool.kind.as_str() {
+                        "data" => {
+                            let mut reserved: Vec<ReservedCard> = Vec::with_capacity(units as usize);
+                            for _ in 0..units {
+                                let Some(entry) =
+                                    cards::reserve_one(&tx, &pool_id, &order_id, &delivery)?
+                                else {
+                                    // 余量不足:tx 在 return 时 drop → 整体回滚,不部分交付
+                                    return Ok(Ok(CardPlan::Insufficient));
+                                };
+                                let aad = Aad {
+                                    purpose: "card_entry".into(),
+                                    entity_id: entry.id.clone(),
+                                    content_version: None,
+                                };
+                                let plain = match crypto::open(&key, &aad, &entry.envelope) {
+                                    Ok(p) => p,
+                                    Err(e) => return Ok(Err(DeliveryError::Crypto(e))),
+                                };
+                                let text = match String::from_utf8(plain) {
+                                    Ok(t) => t,
+                                    Err(_) => {
+                                        return Ok(Err(DeliveryError::Crypto(
+                                            CryptoError::OpenFailed,
+                                        )))
+                                    }
+                                };
+                                reserved.push(ReservedCard { id: entry.id, text });
+                            }
+                            tx.commit()?;
+                            Ok(Ok(CardPlan::Entries {
+                                pool_id,
+                                cards: reserved,
+                            }))
+                        }
+                        "text" | "image" => {
+                            let Some(envelope) = pool.content_envelope else {
+                                return Ok(Ok(CardPlan::Insufficient));
+                            };
+                            let aad = Aad {
+                                purpose: "card_pool_content".into(),
+                                entity_id: pool.id.clone(),
+                                content_version: None,
+                            };
+                            let plaintext = match crypto::open(&key, &aad, &envelope) {
+                                Ok(p) => p,
+                                Err(e) => return Ok(Err(DeliveryError::Crypto(e))),
+                            };
+                            tx.commit()?;
+                            Ok(Ok(CardPlan::FixedContent { pool_id, plaintext }))
+                        }
+                        // api:无本地库存;外部取卡不在事务内发起(端口见 application::ports::cards)
+                        _ => Ok(Ok(CardPlan::Insufficient)),
+                    }
+                },
+            )
+            .await?? // DbError → rusqlite::Error 逐层剥离;业务错误原样透传
+    }
+
+    /// 冻结收尾(fixed_text 与卡密分支共用):快照 AAD 重新封装 → 绑定任务。
+    async fn freeze_plaintext(
+        &self,
+        facts: &DeliveryFacts,
+        delivery_id: &str,
+        rule_id: &str,
+        plaintext: &[u8],
+        digest: &str,
+        source_content_id: String,
+    ) -> Result<bool, DeliveryError> {
         let snapshot_id = ids::new_id("snap");
         let aad = Aad {
             purpose: "content_snapshot".into(),
             entity_id: snapshot_id.clone(),
             content_version: None,
         };
-        let envelope = crypto::seal(&self.key.key, &self.key.key_id, &aad, &plaintext);
+        let envelope = crypto::seal(&self.key.key, &self.key.key_id, &aad, plaintext);
         let order_id = facts.order_id.clone();
         let delivery = delivery_id.to_string();
-        let content_version = content.content_version;
-        let digest = content.text_digest.clone();
+        let rule_id = rule_id.to_string();
+        let digest = digest.to_string();
         self.db
             .call(move |conn| {
                 deliveries::insert_snapshot(
@@ -418,7 +610,7 @@ impl<A: PlatformAdapter> DeliveryService<A> {
                     &deliveries::NewSnapshot {
                         id: &snapshot_id,
                         order_id: &order_id,
-                        source_content_id: &format!("rule:{rule_id}:v{content_version}"),
+                        source_content_id: &source_content_id,
                         envelope: &envelope,
                         digest: &digest,
                     },
@@ -623,6 +815,7 @@ impl<A: PlatformAdapter> DeliveryService<A> {
                 let proof_ref = ids::new_id("prf");
                 let attempt = attempt_id.to_string();
                 let proof_owned = proof.clone();
+                let delivery_for_consume = delivery_id.to_string();
                 self.db
                     .call(move |conn| {
                         deliveries::insert_proof(
@@ -642,7 +835,10 @@ impl<A: PlatformAdapter> DeliveryService<A> {
                             "accepted",
                             None,
                             Some(&proof_ref),
-                        )
+                        )?;
+                        // 卡密分支:平台接纳 → 预留条目扣减为 used(research D3;
+                        // fixed_text 路径无预留,空操作)
+                        cards::consume_by_delivery(conn, &delivery_for_consume)
                     })
                     .await??;
                 let result = self
@@ -713,6 +909,9 @@ impl<A: PlatformAdapter> DeliveryService<A> {
                     let order = order_id.clone();
                     self.db
                         .call(move |conn| {
+                            // 卡密分支:terminal not_sent(确定未发送)→ 释放预留回库存
+                            // (research D3;fixed_text 路径无预留,空操作)
+                            cards::release_by_delivery(conn, &delivery)?;
                             issues::open(
                                 conn,
                                 &ids::new_id("iss"),
@@ -733,6 +932,8 @@ impl<A: PlatformAdapter> DeliveryService<A> {
                 })
             }
             SendOutcome::Rejected { safe_code } => {
+                // 卡密分支:平台永久拒绝保留预留不释放——人工补发复用同一冻结
+                // 快照与同一张卡;只有 terminal not_sent(NotSubmitted 预算耗尽)才释放
                 let code_for_attempt = safe_code.clone();
                 self.db
                     .call({
@@ -782,6 +983,8 @@ impl<A: PlatformAdapter> DeliveryService<A> {
                 })
             }
             SendOutcome::Unknown { hint } => {
+                // 卡密分支:结果未知保持 reserved 不释放(宪章 I:结果未知不回库、
+                // 不换卡、不自动重发),由 delivery_unknown 事项人工裁决后再处置
                 self.db
                     .call({
                         let attempt = attempt_id.to_string();
@@ -1079,6 +1282,36 @@ fn illegal_transition_sql(e: crate::domain::delivery::state::IllegalTransition) 
 pub enum DeliveryTrigger {
     Auto,
     ManualTakeover,
+}
+
+// ---- T012 卡密分支内容计划(research D2/D3) ----
+
+/// freeze_snapshot 装载的内容来源。
+enum LoadedSource {
+    /// 固定文本(001 既有行为)
+    FixedText {
+        content: rules::RuleContentRow,
+        rule: rules::RuleRow,
+    },
+    /// 卡密组来源(rule.card_pool_id 非空)
+    CardPool { rule: rules::RuleRow, pool_id: String },
+    /// 规则或内容缺失 → 冻结失败(既有语义)
+    Missing,
+}
+
+/// 卡密分支单事务规划结果。
+enum CardPlan {
+    /// data 池:预留成功的条目(明文仅存在至快照封存)
+    Entries { pool_id: String, cards: Vec<ReservedCard> },
+    /// text/image 池:固定内容直接冻结
+    FixedContent { pool_id: String, plaintext: Vec<u8> },
+    /// 余量不足/停用/无本地库存:已回滚,调用方开 stock_insufficient 事项
+    Insufficient,
+}
+
+struct ReservedCard {
+    id: String,
+    text: String,
 }
 
 impl<A: PlatformAdapter> DeliveryService<A> {

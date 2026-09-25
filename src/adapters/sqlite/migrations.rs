@@ -15,6 +15,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         3,
         include_str!("../../../migrations/0003_account_profile.sql"),
     ),
+    (
+        4,
+        include_str!("../../../migrations/0004_cards_templates_rules.sql"),
+    ),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -90,29 +94,95 @@ pub fn apply(conn: &mut Connection, data_dir: &Path) -> Result<i64, MigrationErr
 mod tests {
     use super::*;
 
+    /// 实体表总数(不含 sqlite 内部表与 schema_migrations)。
+    /// 随迁移追加更新:T007(0004,+10)→35、T046(0005,+4)→39、T058(0006,+5)→44。
+    const EXPECTED_TABLE_COUNT: i64 = 35;
+
+    const ENTITY_TABLES: &[&str] = &[
+        "installation",
+        "admin",
+        "sessions",
+        "accounts",
+        "account_credentials",
+        "auth_flows",
+        "items",
+        "sync_jobs",
+        "rules",
+        "rule_contents",
+        "orders",
+        "order_facts",
+        "inbound_events",
+        "deliveries",
+        "content_snapshots",
+        "attempts",
+        "delivery_proofs",
+        "order_execution_guards",
+        "issues",
+        "manual_actions",
+        "command_receipts",
+        "operation_jobs",
+        "restore_reviews",
+        "backup_manifests",
+        "verification_attempts",
+        // 007 增量 1(0004,T007)
+        "card_pools",
+        "card_entries",
+        "delivery_templates",
+        "delivery_template_messages",
+        "rule_variants",
+        "reply_rules",
+        "reply_rule_items",
+        "default_replies",
+        "default_reply_log",
+        "review_reminder_state",
+    ];
+
     #[test]
     fn fresh_apply_and_idempotence() {
         let dir = tempfile::tempdir().unwrap();
         let mut conn = Connection::open(dir.path().join("m.db")).unwrap();
         let v1 = apply(&mut conn, dir.path()).unwrap();
-        assert_eq!(v1, 3, "0003 后共 3 个迁移");
+        assert_eq!(v1, MIGRATIONS.last().unwrap().0, "应应用到最新版本");
         let v2 = apply(&mut conn, dir.path()).unwrap();
-        assert_eq!(v2, 3, "重复应用应为空操作");
+        assert_eq!(v2, v1, "重复应用应为空操作");
+        // 已应用版本必须连续 1..=v1(缺号意味着迁移表被手工改动)
+        let versions: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT version FROM schema_migrations ORDER BY version")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            versions,
+            (1..=v1).collect::<Vec<_>>(),
+            "schema_migrations 版本必须连续"
+        );
+        // 实体表清单逐一存在且数量与常量一致(新增迁移时同步两处)
+        let placeholders = ENTITY_TABLES
+            .iter()
+            .map(|n| format!("'{n}'"))
+            .collect::<Vec<_>>()
+            .join(",");
         let tables: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
-                 ('installation','admin','sessions','accounts','account_credentials','auth_flows',
-                  'items','sync_jobs','rules','rule_contents','orders','order_facts',
-                  'inbound_events','deliveries','content_snapshots','attempts','delivery_proofs',
-                  'order_execution_guards','issues','manual_actions','command_receipts',
-                  'operation_jobs','restore_reviews','backup_manifests','verification_attempts')",
+                &format!(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
+                ),
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(
-            tables, 25,
-            "全部实体表应存在(0002 增 verification_attempts)"
+            tables,
+            EXPECTED_TABLE_COUNT,
+            "实体表数量应与 EXPECTED_TABLE_COUNT 一致"
+        );
+        assert_eq!(
+            ENTITY_TABLES.len() as i64, EXPECTED_TABLE_COUNT,
+            "清单长度与常量必须一致(新增表时同步)"
         );
     }
 }

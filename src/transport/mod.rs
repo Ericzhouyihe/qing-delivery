@@ -2,6 +2,7 @@
 //! 本层不执行 SQL、不解析平台协议(宪章 II);所有业务语义来自应用层。
 
 pub mod accounts_api;
+pub mod cards_api;
 pub mod catalog_api;
 pub mod dashboard_api;
 #[cfg(feature = "dev-fixtures")]

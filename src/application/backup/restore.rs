@@ -28,7 +28,8 @@ pub enum RestoreError {
     Sqlite(#[from] rusqlite::Error),
 }
 
-pub const SUPPORTED_SCHEMA: i64 = 3;
+/// 程序支持恢复的最高备份 schema 版本;随迁移追加同步(T007:0004 → 4)。
+pub const SUPPORTED_SCHEMA: i64 = 4;
 
 pub struct RestoreReport {
     pub manifest: ArchiveManifest,
@@ -232,7 +233,7 @@ mod tests {
 
         let out = _guard.path().join("backup.qdbak");
         let manifest = create_backup(&data.root, &out).unwrap();
-        assert_eq!(manifest.schema_version, 3);
+        assert_eq!(manifest.schema_version, 4);
         assert!(out.exists());
 
         // 恢复到新目录

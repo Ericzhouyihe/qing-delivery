@@ -48,6 +48,18 @@ pub fn open_issue_count(conn: &Connection) -> rusqlite::Result<i64> {
     )
 }
 
+/// 概览第 5 卡(007 T014):启用批量(data)组的可用余量合计。
+/// 只读计数;查询失败由应用层降级为 None(不影响其余卡片)。
+pub fn card_stock_available(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM card_entries e
+         JOIN card_pools p ON p.id = e.pool_id
+         WHERE e.state = 'available' AND p.enabled = 1 AND p.kind = 'data'",
+        [],
+        |r| r.get(0),
+    )
+}
+
 /// 恢复隔离快照(restore_epoch=0 表示未隔离);横幅展示用,与 dashboard 同口径。
 pub fn restore_snapshot(conn: &Connection) -> rusqlite::Result<Option<(i64, Option<i64>, i64)>> {
     let restore_epoch: i64 = conn.query_row(

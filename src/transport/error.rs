@@ -30,6 +30,12 @@ pub enum ErrorCode {
     PersistenceUnavailable,
     AccountUnavailable,
     ServiceStopping,
+    // 007 新增(research D14)
+    StockInsufficient,
+    ReferencedResource,
+    PayloadTooLarge,
+    ReplyLimitReached,
+    CredentialChangeFailed,
 }
 
 impl ErrorCode {
@@ -57,6 +63,11 @@ impl ErrorCode {
             ErrorCode::PersistenceUnavailable => "persistence_unavailable",
             ErrorCode::AccountUnavailable => "account_unavailable",
             ErrorCode::ServiceStopping => "service_stopping",
+            ErrorCode::StockInsufficient => "stock_insufficient",
+            ErrorCode::ReferencedResource => "referenced_resource",
+            ErrorCode::PayloadTooLarge => "payload_too_large",
+            ErrorCode::ReplyLimitReached => "reply_limit_reached",
+            ErrorCode::CredentialChangeFailed => "credential_change_failed",
         }
     }
 
@@ -72,13 +83,18 @@ impl ErrorCode {
             | ErrorCode::ActionInProgress
             | ErrorCode::IdempotencyConflict
             | ErrorCode::AlreadyInitialized
-            | ErrorCode::RestoreQuarantined => StatusCode::CONFLICT,
+            | ErrorCode::RestoreQuarantined
+            | ErrorCode::ReferencedResource => StatusCode::CONFLICT,
             ErrorCode::UnsupportedCapability
             | ErrorCode::RuleConflict
             | ErrorCode::IncompleteOrder
             | ErrorCode::ContentTooLong
             | ErrorCode::IneligibleOrder
-            | ErrorCode::UnsafeRetry => StatusCode::UNPROCESSABLE_ENTITY,
+            | ErrorCode::UnsafeRetry
+            | ErrorCode::StockInsufficient
+            | ErrorCode::ReplyLimitReached
+            | ErrorCode::CredentialChangeFailed => StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::PersistenceUnavailable
             | ErrorCode::AccountUnavailable
@@ -129,4 +145,31 @@ impl IntoResponse for ApiError {
 
 pub fn request_id(ext: &axum::Extension<String>) -> String {
     ext.0.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 007 新错误码的三处映射必须一致(snake 名可被前端 contracts 收录)。
+    #[test]
+    fn new_codes_map_snake_status_retryable() {
+        let cases = [
+            (ErrorCode::StockInsufficient, "stock_insufficient", 422, false),
+            (ErrorCode::ReferencedResource, "referenced_resource", 409, false),
+            (ErrorCode::PayloadTooLarge, "payload_too_large", 413, false),
+            (ErrorCode::ReplyLimitReached, "reply_limit_reached", 422, false),
+            (
+                ErrorCode::CredentialChangeFailed,
+                "credential_change_failed",
+                422,
+                false,
+            ),
+        ];
+        for (code, snake, status, retryable) in cases {
+            assert_eq!(code.snake(), snake);
+            assert_eq!(code.status().as_u16(), status);
+            assert_eq!(code.retryable(), retryable);
+        }
+    }
 }

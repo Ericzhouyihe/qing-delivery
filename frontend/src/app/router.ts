@@ -1,5 +1,6 @@
 import type { PageFactory } from "./page";
 import { accountsPage } from "../features/accounts";
+import { cardsPage } from "../features/cards";
 import { catalogPage } from "../features/catalog";
 import { ordersPage } from "../features/orders";
 import { issuesPage } from "../features/issues";
@@ -20,6 +21,8 @@ export interface Route {
 export const routes: Route[] = [
   { path: "/", title: "概览", icon: "◫", page: overviewPage },
   { path: "/accounts", title: "账号", icon: "◉", page: accountsPage },
+  // 007 T016:卡密库存(账号之后,内容链入口;最终导航顺序见 tasks T084)
+  { path: "/cards", title: "卡密库存", icon: "▤", page: cardsPage },
   { path: "/catalog", title: "商品与发货规则", icon: "▦", page: catalogPage },
   { path: "/orders", title: "订单", icon: "⇄", page: ordersPage },
   { path: "/issues", title: "待处理", icon: "⚑", page: issuesPage },

@@ -4,6 +4,7 @@
 pub mod accounts;
 pub mod auth;
 pub mod backup;
+pub mod cards;
 pub mod catalog;
 pub mod delivery;
 pub mod events;

@@ -135,7 +135,7 @@ describe("resolvePresetRange 自然日对齐(005/T009,澄清 Q2)", () => {
   });
 });
 
-describe("四卡视图模型与格式化(005/T009)", () => {
+describe("五卡视图模型与格式化(005/T009 + 007 T018)", () => {
   const overview = (over: Partial<StatsOverview> = {}): StatsOverview => ({
     range: { from: 0, to: 7 * 86_400_000, granularity: "daily" },
     revenue: {
@@ -180,6 +180,16 @@ describe("四卡视图模型与格式化(005/T009)", () => {
     expect(formatYuan(0)).toBe("¥0.00");
     expect(formatYuan(1)).toBe("¥0.01");
     expect(formatYuan(12345)).toBe("¥123.45");
+  });
+
+  it("库存余量派生(007 T018):stock 缺失 → null(界面显示占位,不闪 0)", () => {
+    const degraded = deriveCards(overview());
+    expect(degraded.stockAvailable).toBeNull();
+  });
+
+  it("库存余量派生:stock 存在取 available_total;为 0 也是真实值(非降级)", () => {
+    expect(deriveCards(overview({ stock: { available_total: 12 } })).stockAvailable).toBe(12);
+    expect(deriveCards(overview({ stock: { available_total: 0 } })).stockAvailable).toBe(0);
   });
 });
 

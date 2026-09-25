@@ -15,6 +15,8 @@ pub struct RuleRow {
     pub enabled: bool,
     pub current_content_version: i64,
     pub version: i64,
+    /// 007 增量 1:内容来源卡密组(None/空 = fixed_text)
+    pub card_pool_id: Option<String>,
 }
 
 pub struct RuleContentRow {
@@ -61,7 +63,8 @@ pub fn update_enabled(
 
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<RuleRow>> {
     conn.query_row(
-        "SELECT id, account_id, item_id, sku_key, enabled, current_content_version, version
+        "SELECT id, account_id, item_id, sku_key, enabled, current_content_version, version,
+                card_pool_id
          FROM rules WHERE id = ?1",
         params![id],
         |r| {
@@ -73,6 +76,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<RuleRow>> {
                 enabled: r.get::<_, i64>(4)? != 0,
                 current_content_version: r.get(5)?,
                 version: r.get(6)?,
+                card_pool_id: r.get(7)?,
             })
         },
     )
@@ -87,7 +91,8 @@ pub fn find_enabled_exact(
     sku_key: &str,
 ) -> rusqlite::Result<Option<RuleRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, account_id, item_id, sku_key, enabled, current_content_version, version
+        "SELECT id, account_id, item_id, sku_key, enabled, current_content_version, version,
+                card_pool_id
          FROM rules WHERE account_id = ?1 AND item_id = ?2 AND sku_key = ?3 AND enabled = 1",
     )?;
     let rows = stmt
@@ -100,6 +105,7 @@ pub fn find_enabled_exact(
                 enabled: true,
                 current_content_version: r.get(5)?,
                 version: r.get(6)?,
+                card_pool_id: r.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -214,7 +220,8 @@ pub fn list_for_account(
     limit: i64,
 ) -> rusqlite::Result<Vec<RuleRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, account_id, item_id, sku_key, enabled, current_content_version, version
+        "SELECT id, account_id, item_id, sku_key, enabled, current_content_version, version,
+                card_pool_id
          FROM rules WHERE account_id = ?1 ORDER BY created_at DESC LIMIT ?2",
     )?;
     let rows = stmt
@@ -227,6 +234,7 @@ pub fn list_for_account(
                 enabled: r.get::<_, i64>(4)? != 0,
                 current_content_version: r.get(5)?,
                 version: r.get(6)?,
+                card_pool_id: r.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -24,6 +24,20 @@ export interface ApiErrorBody {
   job_id?: string;
 }
 
+/** 007 新增错误码 → 面向用户的提示文案;未收录的码走"未知错误安全降级"。 */
+export const ERROR_HINTS: Record<string, string> = {
+  stock_insufficient: "卡密库存不足,已转待人工处理,请补充库存",
+  referenced_resource: "该资源正被规则或模板引用,请先解除引用",
+  payload_too_large: "上传内容超出大小限制",
+  reply_limit_reached: "快捷回复已达上限(50 条)",
+  credential_change_failed: "凭据修改失败:当前密码不正确或新值不合法",
+};
+
+export function errorHint(code: string | undefined, fallback: string): string {
+  if (code && ERROR_HINTS[code]) return ERROR_HINTS[code];
+  return fallback;
+}
+
 export interface FieldError {
   field: string;
   code: string;
@@ -61,7 +75,7 @@ export interface AcceptedOperation {
 
 /** 运行时校验：只断言本页实际消费的字段，不做全量复制。 */
 export function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null;
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 export function requireString(v: unknown, field: string): string {
@@ -177,6 +191,9 @@ export interface StatsOverview {
   };
   accounts: { online: number; total: number };
   pending_issues: number;
+  /** 007 T014/T018:库存卡密余量(全部启用批量组可用余量之和)。
+   *  可选字段:旧版本服务缺失时为 undefined,界面显示"—"不闪 0(契约降级)。 */
+  stock?: { available_total: number };
   stopping: boolean;
   restore: {
     state: string;
@@ -194,7 +211,9 @@ export function parseStatsOverview(v: unknown): StatsOverview {
   const accountsRaw = isRecord(v["accounts"]) ? v["accounts"] : {};
   const trendRaw = Array.isArray(v["trend"]) ? v["trend"] : [];
   const restoreRaw = v["restore"];
-  return {
+  // 007:stock 缺失/形状不对 → 字段不设值(undefined),界面降级不闪 0
+  const stockRaw = isRecord(v["stock"]) ? v["stock"] : null;
+  const out: StatsOverview = {
     range: {
       from: typeof rangeRaw["from"] === "number" ? rangeRaw["from"] : 0,
       to: typeof rangeRaw["to"] === "number" ? rangeRaw["to"] : 0,
@@ -239,4 +258,95 @@ export function parseStatsOverview(v: unknown): StatsOverview {
       };
     })
   };
+  if (stockRaw !== null && typeof stockRaw["available_total"] === "number") {
+    out.stock = { available_total: stockRaw["available_total"] };
+  }
+  return out;
+}
+
+// ===== 卡密库存(007,contracts §1;T015)=====
+
+export type CardPoolKind = "data" | "text" | "image" | "api";
+
+/** data 组分状态库存计数(transport summary_json 的 stock 键)。 */
+export interface StockSummary {
+  available: number;
+  reserved: number;
+  used: number;
+}
+
+/** api 组脱敏摘要:headers/params/body 只回"是否已配置",值永不回显。 */
+export interface CardPoolApiConfigSummary {
+  url: string;
+  method: string;
+  timeout_ms: number;
+  content_type: string | null;
+  response_path: string;
+  retry_enabled: boolean;
+  headers_configured: boolean;
+  params_configured: boolean;
+  body_configured: boolean;
+}
+
+export interface CardPoolDto {
+  id: string;
+  name: string;
+  kind: CardPoolKind;
+  enabled: boolean;
+  delay_seconds: number;
+  description: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  /** 仅 data 组返回;缺失(undefined)时界面按"计数不可用"降级。 */
+  stock?: StockSummary;
+  /** 仅 text/image 组返回:固定内容是否已配置(明文永不回显)。 */
+  content_set?: boolean;
+  /** 仅 api 组返回。 */
+  api_config?: CardPoolApiConfigSummary;
+}
+
+/** 只校验消费字段,缺失降级(与账号/统计 parse 同模式);非对象抛错。 */
+export function parseCardPool(v: unknown): CardPoolDto {
+  if (!isRecord(v)) throw new Error("卡密组格式错误");
+  const kindRaw = String(v["kind"] ?? "");
+  const kind: CardPoolKind =
+    kindRaw === "data" || kindRaw === "text" || kindRaw === "image" || kindRaw === "api"
+      ? kindRaw
+      : "data";
+  const stockRaw = isRecord(v["stock"]) ? v["stock"] : null;
+  const apiRaw = isRecord(v["api_config"]) ? v["api_config"] : null;
+  const out: CardPoolDto = {
+    id: String(v["id"] ?? ""),
+    name: String(v["name"] ?? ""),
+    kind,
+    enabled: v["enabled"] === true,
+    delay_seconds: typeof v["delay_seconds"] === "number" ? v["delay_seconds"] : 0,
+    description: String(v["description"] ?? ""),
+    version: typeof v["version"] === "number" ? v["version"] : 1,
+    created_at: String(v["created_at"] ?? ""),
+    updated_at: String(v["updated_at"] ?? "")
+  };
+  if (stockRaw !== null) {
+    out.stock = {
+      available: typeof stockRaw["available"] === "number" ? stockRaw["available"] : 0,
+      reserved: typeof stockRaw["reserved"] === "number" ? stockRaw["reserved"] : 0,
+      used: typeof stockRaw["used"] === "number" ? stockRaw["used"] : 0
+    };
+  }
+  if (typeof v["content_set"] === "boolean") out.content_set = v["content_set"];
+  if (apiRaw !== null) {
+    out.api_config = {
+      url: String(apiRaw["url"] ?? ""),
+      method: String(apiRaw["method"] ?? "GET"),
+      timeout_ms: typeof apiRaw["timeout_ms"] === "number" ? apiRaw["timeout_ms"] : 10_000,
+      content_type: typeof apiRaw["content_type"] === "string" ? apiRaw["content_type"] : null,
+      response_path: String(apiRaw["response_path"] ?? ""),
+      retry_enabled: apiRaw["retry_enabled"] === true,
+      headers_configured: apiRaw["headers_configured"] === true,
+      params_configured: apiRaw["params_configured"] === true,
+      body_configured: apiRaw["body_configured"] === true
+    };
+  }
+  return out;
 }

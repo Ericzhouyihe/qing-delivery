@@ -50,6 +50,8 @@ pub async fn stats_overview(
                 "total": ov.accounts_total,
             },
             "pending_issues": ov.pending_issues,
+            // 007 T014:库存卡密余量(可选字段;缺失为 null,前端降级不闪 0)
+            "stock": ov.stock.map(|s| json!({"available_total": s.available_total})),
             "trend": ov.trend.iter().map(|p| json!({
                 "bucket_start": p.bucket_start_ms,
                 "minor_units": p.minor_units,

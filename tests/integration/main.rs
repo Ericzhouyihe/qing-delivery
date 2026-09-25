@@ -3,6 +3,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod cards;
 mod catalog_rules;
 mod delivery_core;
 mod query_backup;

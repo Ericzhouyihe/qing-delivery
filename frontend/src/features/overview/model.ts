@@ -130,7 +130,8 @@ export function formatYuan(minorUnits: number): string {
   return `¥${(minorUnits / 100).toFixed(2)}`;
 }
 
-/** 四卡视图模型(派生自 StatsOverview,与 DOM 解耦以便行为测试)。 */
+/** 五卡视图模型(派生自 StatsOverview,与 DOM 解耦以便行为测试)。
+ *  007 T018:第 5 卡"库存卡密余量" = 全部启用批量组可用余量之和。 */
 export interface OverviewCards {
   revenueText: string;
   /** null = 前区间无数据 → 徽标隐藏(FR-003),不得显示 0% 冒充。 */
@@ -141,6 +142,8 @@ export interface OverviewCards {
   accountsTotal: number;
   orderCount: number;
   pending: number;
+  /** null = 服务未提供 stock 字段(旧版本)→ 界面显示"—"不闪 0(契约降级)。 */
+  stockAvailable: number | null;
 }
 
 export function deriveCards(s: StatsOverview): OverviewCards {
@@ -154,6 +157,7 @@ export function deriveCards(s: StatsOverview): OverviewCards {
     accountsOnline: s.accounts.online,
     accountsTotal: s.accounts.total,
     orderCount: s.revenue.order_count,
-    pending: s.pending_issues
+    pending: s.pending_issues,
+    stockAvailable: s.stock?.available_total ?? null
   };
 }

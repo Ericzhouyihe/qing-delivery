@@ -1439,3 +1439,17 @@ textarea[aria-invalid="true"] {
 .segmented-item.active:hover {
   background: var(--primary-hover);
 }
+
+/* ===== 卡密库存(007)===== */
+/* 目标零新增布局类:页头/工具栏/表格/徽章/抽屉/弹窗全部复用既有词汇表;
+   以下仅补齐复用控件在本页场景下的缺省态。 */
+.chip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.filter-bar .search-input {
+  min-width: 180px;
+}
+.cards-list-host table.data td {
+  max-width: 320px;
+}

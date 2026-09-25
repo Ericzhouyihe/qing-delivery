@@ -14,6 +14,12 @@ pub struct RestoreInfo {
     pub unresolved_count: i64,
 }
 
+/// 概览第 5 卡(007 T014):库存卡密余量摘要;查询失败降级为 None,不闪 0。
+#[derive(Debug, Clone, PartialEq)]
+pub struct StockSummary {
+    pub available_total: i64,
+}
+
 /// 概览统计投影(契约 §GET /api/v1/stats/overview 的载荷形状)。
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatsOverview {
@@ -27,6 +33,8 @@ pub struct StatsOverview {
     pub pending_issues: i64,
     pub trend: Vec<TrendPoint>,
     pub restore: Option<RestoreInfo>,
+    /// 007 T014 可选库存卡;缺失降级(其余卡片不受影响)
+    pub stock: Option<StockSummary>,
 }
 
 #[derive(Clone)]
@@ -59,6 +67,10 @@ impl StatsService {
                             unresolved_count: unresolved,
                         }
                     });
+                // 库存卡(007 T014):查询失败降级 None,不阻断整屏统计
+                let stock = stats_repo::card_stock_available(conn)
+                    .ok()
+                    .map(|available_total| StockSummary { available_total });
                 Ok(StatsOverview {
                     range,
                     revenue_minor_units: totals.minor_units,
@@ -70,6 +82,7 @@ impl StatsService {
                     pending_issues,
                     trend,
                     restore,
+                    stock,
                 })
             })
             .await

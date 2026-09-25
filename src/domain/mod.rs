@@ -3,6 +3,7 @@
 //! 本模块不得依赖 HTTP、SQLite 或浏览器(宪章 II)。
 
 pub mod accounts;
+pub mod cards;
 pub mod crypto;
 pub mod delivery;
 pub mod ids;

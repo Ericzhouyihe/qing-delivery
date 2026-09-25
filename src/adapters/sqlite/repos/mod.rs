@@ -5,6 +5,7 @@
 pub mod accounts;
 pub mod admin;
 pub mod auth_flows;
+pub mod cards;
 pub mod credentials;
 pub mod deliveries;
 pub mod inbound;
