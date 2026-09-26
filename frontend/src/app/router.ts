@@ -1,15 +1,19 @@
 import type { PageFactory } from "./page";
 import { accountsPage } from "../features/accounts";
 import { cardsPage } from "../features/cards";
-import { catalogPage } from "../features/catalog";
+import { templatesPage } from "../features/templates";
+import { itemsPage } from "../features/items";
+import { rulesPage } from "../features/rules";
+import { chatPage } from "../features/chat";
 import { ordersPage } from "../features/orders";
 import { issuesPage } from "../features/issues";
+import { notificationsPage } from "../features/notifications";
 import { settingsPage } from "../features/settings";
 import { overviewPage } from "../features/overview/page";
 import { renderAuth } from "./auth";
 import { bootstrapSession, session } from "./session";
 import { mountShell, type ShellHandle } from "./shell";
-import { getPendingIssues } from "./store";
+import { getChatUnread, getPendingIssues } from "./store";
 
 export interface Route {
   path: string;
@@ -21,12 +25,21 @@ export interface Route {
 export const routes: Route[] = [
   { path: "/", title: "概览", icon: "◫", page: overviewPage },
   { path: "/accounts", title: "账号", icon: "◉", page: accountsPage },
+  // 007 T053:在线聊天(账号之后;侧边栏未读徽标由聊天页轮询写入 store 驱动)
+  { path: "/chat", title: "在线聊天", icon: "✉", page: chatPage },
   // 007 T016:卡密库存(账号之后,内容链入口;最终导航顺序见 tasks T084)
   { path: "/cards", title: "卡密库存", icon: "▤", page: cardsPage },
-  { path: "/catalog", title: "商品与发货规则", icon: "▦", page: catalogPage },
+  // 007 T040:/catalog「商品与规则」合并页拆分为商品列表与自动化规则两页(FR-001);
+  // 顺序对齐参考页:卡密库存、商品列表、订单、发货模板、自动化规则、待处理…
+  { path: "/items", title: "商品列表", icon: "▦", page: itemsPage },
   { path: "/orders", title: "订单", icon: "⇄", page: ordersPage },
+  { path: "/templates", title: "发货模板", icon: "▣", page: templatesPage },
+  { path: "/rules", title: "自动化规则", icon: "⚡", page: rulesPage },
   { path: "/issues", title: "待处理", icon: "⚑", page: issuesPage },
-  { path: "/settings", title: "设置", icon: "⚙", page: settingsPage }
+  // 007 T064:通知设置(待处理之后、设置之前;最终导航顺序见 tasks T084)
+  { path: "/notifications", title: "通知设置", icon: "◆", page: notificationsPage },
+  // 007 T084:按 FR-001 对齐参考页命名「系统与AI」(页面内标题同步)
+  { path: "/settings", title: "系统与AI", icon: "⚙", page: settingsPage }
 ];
 
 function matchRoute(path: string): Route {
@@ -44,7 +57,7 @@ export function installRouter(root: HTMLElement): void {
     path: r.path,
     title: r.title,
     icon: r.icon,
-    badge: r.path === "/issues" ? () => getPendingIssues() : undefined
+    badge: r.path === "/issues" ? () => getPendingIssues() : r.path === "/chat" ? () => getChatUnread() : undefined
   }));
 
   const render = (): void => {

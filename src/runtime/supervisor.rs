@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, watch};
 use crate::adapters::sqlite::db::DbThread;
 use crate::adapters::sqlite::repos::credentials;
 use crate::adapters::windows::keys::DataKey;
+use crate::application::chat::{ChatService, IncomingChatMessage};
 use crate::application::delivery::service::DeliveryService;
 use crate::application::events::{EventOutcome, EventPipeline};
 use crate::application::manual::actions::ManualService;
@@ -19,6 +20,7 @@ use crate::application::ports::platform::{
 };
 use crate::application::recovery::compensate::CompensationService;
 use crate::application::recovery::trace::TraceScanService;
+use crate::application::replies::ReviewReminderService;
 use crate::domain::ids;
 use crate::domain::time_util::utc_now_ms;
 
@@ -61,6 +63,8 @@ impl<A: PlatformAdapter + 'static> RuntimeHandles<A> {
 
 const SUPERVISOR_TICK: Duration = Duration::from_secs(3);
 const TRACE_INTERVAL: Duration = Duration::from_secs(60);
+/// 求评计划扫描间隔(007 T037,FR-035:默认每小时一次)
+const REVIEW_REMINDER_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// 启动运行时:事件分发、账号值守、漏单补偿与追溯扫描。
 /// 各服务为无状态 DB 包装,以同源(db/key/adapter)构造等价实例共享行为。
@@ -77,24 +81,42 @@ pub fn spawn<A>(
 where
     A: PlatformAdapter + Clone + 'static,
 {
-    let delivery = std::sync::Arc::new(DeliveryService::new(
+    // 007 T062(US5):通知服务(事件挂钩 + 交付终态通知;spawn 扇出)
+    let notify = std::sync::Arc::new(crate::application::notify::NotifyService::new(
         db.clone(),
         key.clone(),
-        adapter.clone(),
     ));
+    let delivery = std::sync::Arc::new(
+        DeliveryService::new(db.clone(), key.clone(), adapter.clone())
+            .with_notify(notify.clone()),
+    );
     let manual = std::sync::Arc::new(ManualService::new(
         db.clone(),
         key.clone(),
-        DeliveryService::new(db.clone(), key.clone(), adapter.clone()),
+        DeliveryService::new(db.clone(), key.clone(), adapter.clone())
+            .with_notify(notify.clone()),
     ));
     let trace = std::sync::Arc::new(TraceScanService::new(
         db.clone(),
-        DeliveryService::new(db.clone(), key.clone(), adapter.clone()),
+        DeliveryService::new(db.clone(), key.clone(), adapter.clone())
+            .with_notify(notify.clone()),
     ));
     let compensate = std::sync::Arc::new(CompensationService::new(
         db.clone(),
-        DeliveryService::new(db.clone(), key.clone(), adapter),
-    ));
+        DeliveryService::new(db.clone(), key.clone(), adapter.clone())
+            .with_notify(notify.clone()),
+    ));    // 007 T050:聊天用例(买家消息摄取 + 发送回执回填,事件分发消费)
+    // 007 T077:AI 分支实装(HttpAiProvider:系统未配 Key 等价 NoAi 直落默认)
+    let chat = std::sync::Arc::new(
+        ChatService::new(db.clone(), adapter.clone()).with_ai(std::sync::Arc::new(
+            crate::application::replies::HttpAiProvider::new(
+                db.clone(),
+                crate::application::settings_sys::SettingsService::new(db.clone(), key.clone()),
+            ),
+        )),
+    );
+    // 007 T037:求评计划服务(每小时扫描 accepted 订单,按 review_config 发送)
+    let reminders = std::sync::Arc::new(ReviewReminderService::new(db.clone(), adapter));
     let pipeline = EventPipeline::new(db.clone());
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -103,6 +125,7 @@ where
     // 事件分发:持久化去重 → 状态推进 → 付款候选触发交付
     let dispatch_delivery = delivery.clone();
     let dispatch_db = db.clone();
+    let dispatch_notify = notify.clone();
     tokio::spawn(async move {
         let dispatch_verify = verification.clone();
         dispatch_loop(
@@ -111,6 +134,8 @@ where
             dispatch_delivery,
             dispatch_db,
             dispatch_verify,
+            chat,
+            dispatch_notify,
         )
         .await;
     });
@@ -124,9 +149,15 @@ where
         shutdown_rx.clone(),
     ));
 
+    // 007 T037:求评计划(每小时;启动即扫一轮补停机缺口)
+    let reminder_shutdown = shutdown_rx.clone();
     // 补偿与追溯:漏通知 120 秒规则由 CompensationService 内部执行
     tokio::spawn(async move {
         recovery_loop(compensate, trace, db, shutdown_rx).await;
+    });
+
+    tokio::spawn(async move {
+        reminder_loop(reminders, reminder_shutdown).await;
     });
 
     RuntimeHandles {
@@ -152,7 +183,8 @@ fn fields_of(event: &PlatformEvent) -> (EventMeta, EventField) {
         | PlatformEvent::OrderStateSignal { meta, .. }
         | PlatformEvent::OutgoingMessageEvidence { meta, .. }
         | PlatformEvent::TraceGap { meta, .. }
-        | PlatformEvent::ProtocolIssue { meta, .. } => meta.clone(),
+        | PlatformEvent::ProtocolIssue { meta, .. }
+        | PlatformEvent::ChatMessageReceived { meta, .. } => meta.clone(),
     };
     let field = match event {
         PlatformEvent::OrderPaymentSignal { order_id, .. } => EventField {
@@ -179,7 +211,7 @@ fn fields_of(event: &PlatformEvent) -> (EventMeta, EventField) {
     (meta, field)
 }
 
-async fn dispatch_loop<A: PlatformAdapter + 'static>(
+async fn dispatch_loop<A: PlatformAdapter + Clone + 'static>(
     mut rx: mpsc::Receiver<PlatformEvent>,
     pipeline: EventPipeline,
     delivery: std::sync::Arc<DeliveryService<A>>,
@@ -187,6 +219,8 @@ async fn dispatch_loop<A: PlatformAdapter + 'static>(
     verification: Option<
         std::sync::Arc<crate::application::verification::service::VerificationService>,
     >,
+    chat: std::sync::Arc<ChatService<A>>,
+    notify: std::sync::Arc<crate::application::notify::NotifyService>,
 ) {
     while let Some(event) = rx.recv().await {
         let (_meta, field) = fields_of(&event);
@@ -195,14 +229,20 @@ async fn dispatch_loop<A: PlatformAdapter + 'static>(
             && let Some(account) = field.account_id.clone()
         {
             let _ = db
-                .call(move |conn| {
-                    conn.execute(
-                        "UPDATE accounts SET status = ?2, version = version + 1, updated_at = ?3
-                         WHERE id = ?1",
-                        rusqlite::params![account, state, utc_now_ms()],
-                    )
+                .call({
+                    let account = account.clone();
+                    let state = state.clone();
+                    move |conn| {
+                        conn.execute(
+                            "UPDATE accounts SET status = ?2, version = version + 1, updated_at = ?3
+                             WHERE id = ?1",
+                            rusqlite::params![account, state, utc_now_ms()],
+                        )
+                    }
                 })
                 .await;
+            // 007 T062(US5):掉线/恢复通知(spawn,不阻塞事件管道)
+            notify.on_runtime_changed(&account, &state);
         }
         // 003:验证要求信号(WS/mtop/QR 汇入 AuthorizationChanged)→ 处置服务
         if let PlatformEvent::AuthorizationChanged { state, .. } = &event
@@ -210,12 +250,62 @@ async fn dispatch_loop<A: PlatformAdapter + 'static>(
             && let Some(service) = verification.as_ref()
             && let Some(account) = field.account_id.clone()
         {
+            // 007 T062(US5):安全验证通知(spawn)
+            notify.on_verification_required(&account);
             service.handle_signal(crate::application::verification::VerificationSignal {
                 account_id: account,
                 source: crate::application::verification::SignalSource::Ws,
                 url: None,
                 raw: state.clone(),
             });
+        }
+        // 007 T062(US5):协议异常 → 系统错误通知(spawn)
+        if let PlatformEvent::ProtocolIssue { meta, reason, .. } = &event {
+            notify.on_system_error(Some(&meta.account_id), reason);
+        }
+        // 007 T045:买家聊天消息 → 聊天摄取(幂等去重/未读/触发自动回复分流);
+        // 仅买家方向事件会出现在此变体(系统/卡片消息走既有路径)
+        if let PlatformEvent::ChatMessageReceived {
+            meta,
+            chat_id,
+            buyer_id,
+            message_id,
+            msg_kind,
+            text,
+            image_url,
+            item_id,
+        } = &event
+        {
+            if let Some(buyer) = buyer_id.clone().filter(|b| !b.trim().is_empty()) {
+                let incoming = IncomingChatMessage {
+                    account_id: meta.account_id.clone(),
+                    platform_message_id: message_id.clone(),
+                    chat_id: chat_id.clone(),
+                    buyer_id: buyer,
+                    msg_kind: *msg_kind,
+                    text: text.clone(),
+                    image_url: image_url.clone(),
+                    item_id: item_id.clone(),
+                };
+                if let Err(e) = chat.ingest(incoming).await {
+                    tracing::warn!(account = %meta.account_id, error = %e, "聊天消息摄取失败");
+                }
+            } else {
+                tracing::warn!(account = %meta.account_id, "聊天消息缺少买家标识,丢弃");
+            }
+        }
+        // 007 T050:发送回执 → 出站行回填(无匹配行=交付类回执,正常 no-op)。
+        // 消费方式注明:不经管道改造,dispatch_loop 直调 ChatService::apply_evidence。
+        if let PlatformEvent::OutgoingMessageEvidence {
+            meta,
+            request_id,
+            platform_message_id,
+            ..
+        } = &event
+            && let Some(pmid) = platform_message_id.clone().filter(|v| !v.is_empty())
+            && let Err(e) = chat.apply_evidence(request_id, &pmid).await
+        {
+            tracing::warn!(account = %meta.account_id, error = %e, "聊天发送回执回填失败");
         }
         match pipeline.process(&event).await {
             Ok(EventOutcome::PaymentSignal { .. })
@@ -337,6 +427,31 @@ async fn recovery_loop<A: PlatformAdapter + 'static>(
                     if let Err(e) = trace.run_once(&account, &ctx).await {
                         tracing::warn!(account, error = %e, "订单追溯扫描失败");
                     }
+                }
+            }
+        }
+    }
+}
+
+/// 求评计划定时循环(007 T037):照 recovery_loop 模式;每小时一轮,
+/// 启动即扫一轮(补停机期间到期缺口)。停止语义与 recovery_loop 一致。
+async fn reminder_loop<A: PlatformAdapter + 'static>(
+    reminders: std::sync::Arc<ReviewReminderService<A>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut tick = tokio::time::interval(REVIEW_REMINDER_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_ok() && *shutdown.borrow() {
+                    break;
+                }
+            }
+            _ = tick.tick() => {
+                if let Err(e) = reminders.run_once().await {
+                    tracing::warn!(error = %e, "求评计划扫描失败");
                 }
             }
         }

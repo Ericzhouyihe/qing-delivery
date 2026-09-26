@@ -104,6 +104,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRow> {
 }
 
 /// 账号内商品列表(带规则配置状态徽标计算所需字段)。
+/// 排除账号级规则的哨兵行(007 US3:存储适配行,非真实平台商品)。
 pub fn list_for_account(
     conn: &Connection,
     account_id: &str,
@@ -112,10 +113,18 @@ pub fn list_for_account(
     let mut stmt = conn.prepare(
         "SELECT id, account_id, external_item_id, title, listing_state, sku_definition,
                 sku_completeness, version FROM items
-         WHERE account_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+         WHERE account_id = ?1 AND external_item_id != ?2
+         ORDER BY created_at DESC LIMIT ?3",
     )?;
     let rows = stmt
-        .query_map(params![account_id, limit], row)?
+        .query_map(
+            params![
+                account_id,
+                crate::adapters::sqlite::repos::rules_ext::ACCOUNT_SCOPE_EXTERNAL_ID,
+                limit
+            ],
+            row,
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }

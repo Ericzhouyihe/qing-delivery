@@ -23,6 +23,8 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/initialize", post(initialize_handler))
         .route("/auth/login", post(login_handler))
         .route("/auth/logout", post(logout_handler))
+        // 007 US7:管理员凭据修改(FR-072,当前会话保留其余全部失效)
+        .route("/auth/credentials", put(crate::transport::settings_api::put_credentials))
         .route("/capabilities", get(capabilities_handler))
         .route("/jobs/{job_id}", get(job_handler))
         .route("/jobs/{job_id}/cancel", post(job_cancel_handler))
@@ -99,7 +101,28 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/accounts/{account_id}/rules/{rule_id}",
-            put(crate::transport::catalog_api::update_rule),
+            put(crate::transport::catalog_api::update_rule)
+                .delete(crate::transport::catalog_api::delete_rule),
+        )
+        // 关键词回复与默认回复(007 US3 contracts §3,T039)
+        .route(
+            "/accounts/{account_id}/reply-rules",
+            get(crate::transport::rules_api::list_reply_rules)
+                .post(crate::transport::rules_api::create_reply_rule),
+        )
+        .route(
+            "/accounts/{account_id}/reply-rules/{reply_rule_id}",
+            put(crate::transport::rules_api::update_reply_rule)
+                .delete(crate::transport::rules_api::delete_reply_rule),
+        )
+        .route(
+            "/accounts/{account_id}/default-reply",
+            get(crate::transport::rules_api::get_default_reply)
+                .put(crate::transport::rules_api::put_default_reply),
+        )
+        .route(
+            "/accounts/{account_id}/default-reply/clear-records",
+            post(crate::transport::rules_api::clear_default_reply_records),
         )
         // 卡密库存(007 contracts §1):静态段先于 {pool_id} 注册
         .route(
@@ -132,6 +155,102 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/card-pools/{pool_id}/entries",
             get(crate::transport::cards_api::list_entries),
+        )
+        // 发货模板(007 contracts §2):列表/创建/更新/删除
+        .route(
+            "/delivery-templates",
+            get(crate::transport::templates_api::list_templates)
+                .post(crate::transport::templates_api::create_template),
+        )
+        .route(
+            "/delivery-templates/{template_id}",
+            axum::routing::put(crate::transport::templates_api::update_template)
+                .delete(crate::transport::templates_api::delete_template),
+        )
+        // 在线聊天(007 contracts §4):静态段先于 {id} 段注册
+        .route(
+            "/chat/unread-summary",
+            get(crate::transport::chat_api::unread_summary),
+        )
+        .route(
+            "/chat/quick-replies",
+            get(crate::transport::chat_api::list_quick_replies)
+                .post(crate::transport::chat_api::create_quick_reply),
+        )
+        .route(
+            "/chat/quick-replies/{reply_id}",
+            axum::routing::delete(crate::transport::chat_api::delete_quick_reply),
+        )
+        .route(
+            "/chat/accounts/{account_id}/buyer-notes/{buyer_id}",
+            get(crate::transport::chat_api::get_buyer_note)
+                .put(crate::transport::chat_api::put_buyer_note),
+        )
+        .route(
+            "/chat/conversations/{conversation_id}/messages",
+            get(crate::transport::chat_api::list_messages)
+                .post(crate::transport::chat_api::send_message),
+        )
+        .route(
+            "/chat/conversations/{conversation_id}/images",
+            post(crate::transport::chat_api::send_image).layer(axum::extract::DefaultBodyLimit::max(
+                // 传输层护栏(远高于 10MB 文件上限):应用层流式上限先触发 413
+                crate::application::chat::IMAGE_MAX_BYTES + 8 * 1024 * 1024,
+            )),
+        )
+        .route(
+            "/chat/conversations/{conversation_id}/read",
+            post(crate::transport::chat_api::mark_read),
+        )
+        .route(
+            "/chat/conversations/{conversation_id}",
+            axum::routing::delete(crate::transport::chat_api::delete_conversation),
+        )
+        .route(
+            "/chat/messages/{message_id}/retry",
+            post(crate::transport::chat_api::retry_message),
+        )
+        .route(
+            "/accounts/{account_id}/chat/sessions",
+            get(crate::transport::chat_api::list_sessions),
+        )
+        // 通知渠道(007 contracts §5,T063):静态段先于 {id} 段注册
+        .route(
+            "/notification-channels",
+            get(crate::transport::notify_api::list_channels)
+                .post(crate::transport::notify_api::create_channel),
+        )
+        .route(
+            "/notification-channels/{channel_id}",
+            get(crate::transport::notify_api::get_channel)
+                .put(crate::transport::notify_api::update_channel)
+                .delete(crate::transport::notify_api::delete_channel),
+        )
+        .route(
+            "/notification-channels/{channel_id}/test",
+            post(crate::transport::notify_api::test_channel),
+        )
+        .route(
+            "/accounts/{account_id}/notification-bindings",
+            get(crate::transport::notify_api::get_bindings)
+                .put(crate::transport::notify_api::put_bindings),
+        )
+        .route(
+            "/settings/system-smtp",
+            get(crate::transport::notify_api::get_system_smtp)
+                .put(crate::transport::notify_api::put_system_smtp),
+        )
+        // 007 US7 系统与 AI(contracts §7,T078)
+        .route(
+            "/settings/system",
+            get(crate::transport::settings_api::get_system)
+                .put(crate::transport::settings_api::put_system),
+        )
+        .route("/settings/ai/models", post(crate::transport::settings_api::ai_models))
+        .route("/settings/ai/test", post(crate::transport::settings_api::ai_test))
+        .route(
+            "/accounts/{account_id}/ai-settings",
+            put(crate::transport::settings_api::put_account_ai_settings),
         )
         .route("/issues", get(crate::transport::manual_api::list_issues))
         .route(
@@ -173,6 +292,21 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/accounts/{account_id}/orders/{order_id}/takeovers",
             post(crate::transport::manual_api::takeover),
+        )
+        // 007 US6:人工触发交付 / 人工确认平台已发货(contracts §6)
+        .route(
+            "/accounts/{account_id}/orders/{order_id}/deliveries",
+            post(crate::transport::manual_api::trigger_delivery),
+        )
+        .route(
+            "/accounts/{account_id}/orders/{order_id}/confirm-shipments",
+            post(crate::transport::manual_api::confirm_shipment),
+        )
+        // 007 US6:一键同步与单笔同步
+        .route("/orders/syncs", post(crate::transport::orders_api::start_order_sync))
+        .route(
+            "/accounts/{account_id}/orders/{order_id}/syncs",
+            post(crate::transport::orders_api::sync_single_order),
         );
     #[cfg(feature = "dev-fixtures")]
     let api = api
@@ -286,6 +420,11 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
+/// 供 settings_api 等模块取当前会话原文 token(改密保留当前会话语义)。
+pub fn session_token_from_headers(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    cookie_value(headers, cookie_name)
+}
+
 fn csrf_header(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-csrf-token")
@@ -308,6 +447,10 @@ fn from_auth_error(e: AuthError) -> ApiError {
         }
         AuthError::SessionInvalid => err(ErrorCode::AuthenticationRequired, "需要管理员登录"),
         AuthError::CsrfRejected => err(ErrorCode::CsrfRejected, "CSRF 校验失败"),
+        // US7 凭据修改语义错误只在 /auth/credentials 端点出现,这里兜底 422
+        AuthError::CredentialChangeFailed => {
+            err(ErrorCode::CredentialChangeFailed, "凭据修改失败")
+        }
         AuthError::Db(_) | AuthError::Hash(_) | AuthError::Sqlite(_) => {
             err(ErrorCode::PersistenceUnavailable, "服务暂不可用")
         }
@@ -516,6 +659,12 @@ async fn capabilities_handler(State(state): SharedState, headers: HeaderMap) -> 
         ExecutionProfile::Live => "live",
         ExecutionProfile::Mock => "mock",
     };
+    // 007 D6/T035:聊天能力声明。live=闲鱼适配器如实未验证(false),
+    // mock 两项已实现(true);前端按此门禁图片入口与历史说明(FR-042,US4 消费)。
+    let chat_caps = match state.inner.config.profile {
+        ExecutionProfile::Live => crate::application::ports::platform::CapabilitySet::LIVE,
+        ExecutionProfile::Mock => crate::application::ports::platform::CapabilitySet::MOCK,
+    };
     Json(json!({
         "platforms": [
             { "platform": "xianyu", "supported": true },
@@ -530,6 +679,8 @@ async fn capabilities_handler(State(state): SharedState, headers: HeaderMap) -> 
             "utf8_bytes": 4000,
             "effective_source": "product"
         },
+        "chat_send_image": chat_caps.chat_send_image,
+        "chat_history_backfill": chat_caps.chat_history_backfill,
         "browser": {
             "available": crate::adapters::browser::manager::detect_browser().is_ok(),
             "engine": "system-chromium",

@@ -371,7 +371,7 @@ fn run_serve(args: ServeArgs) -> i32 {
     // 运行时接线(T093):live 构造真实协议适配器并启动账号值守;
     // mock(dev-fixtures)构造进程内假适配器。人工动作句柄与扫码驱动注入 AppState。
     // build_runtime 内部 tokio::spawn,必须在 rt 上下文内构造(spawn 的任务随 rt 存活)
-    let (manual, authorization, item_sync, verification, runtime_stop) =
+    let (manual, authorization, item_sync, verification, chat, order_sync, runtime_stop) =
         rt.block_on(async { build_runtime(profile, db.clone(), &key, &data_dir.root) });
 
     let state = AppState::new(
@@ -392,6 +392,8 @@ fn run_serve(args: ServeArgs) -> i32 {
         authorization,
         item_sync,
         verification,
+        chat,
+        order_sync,
         ServeConfig::for_bind(bind, profile),
         key,
     );
@@ -437,7 +439,7 @@ fn run_serve(args: ServeArgs) -> i32 {
 
 /// 按构造 profile:live = 真实协议 + 账号值守 + 扫码驱动 + 商品同步驱动;
 /// mock(dev-fixtures) = 假适配器 + 无值守。
-/// 返回(人工动作句柄, 扫码驱动, 商品同步驱动, 停止future)。
+/// 返回(人工动作句柄, 扫码驱动, 商品同步驱动, 聊天用例, 停止future)。
 #[allow(clippy::type_complexity)]
 fn build_runtime(
     profile: qing_delivery::transport::state::ExecutionProfile,
@@ -449,6 +451,8 @@ fn build_runtime(
     Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
     Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
     Option<std::sync::Arc<qing_delivery::application::verification::service::VerificationService>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::chat::ChatOps>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::orders_sync::OrderSyncOps>>,
     Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 ) {
     use qing_delivery::application::accounts::authorize::{AuthorizationService, QrDriver};
@@ -497,7 +501,45 @@ fn build_runtime(
             let manual: std::sync::Arc<dyn ManualOps> = handles.manual.clone();
             let item_sync: std::sync::Arc<
                 dyn qing_delivery::application::ports::platform::ItemSyncDriver,
-            > = std::sync::Arc::new(adapter);
+            > = std::sync::Arc::new(adapter.clone());
+            // 007 US6:一键订单同步(live=闲鱼追溯)
+            let order_sync_handle: std::sync::Arc<
+                dyn qing_delivery::application::orders_sync::OrderSyncOps,
+            > = std::sync::Arc::new(
+                qing_delivery::application::orders_sync::OrderSyncService::new(
+                    db.clone(),
+                    qing_delivery::adapters::windows::keys::DataKey {
+                        key_id: key.key_id.clone(),
+                        key: key.key,
+                    },
+                    adapter.clone(),
+                ),
+            );
+            // 007 US4:聊天用例(live 能力如实:图片发送/历史回填未验证=false);
+            // US7/T077:AI 分支注入 HttpAiProvider(系统未配 Key 等价 NoAi)
+            let chat: std::sync::Arc<dyn qing_delivery::application::chat::ChatOps> =
+                std::sync::Arc::new(
+                    qing_delivery::application::chat::ChatService::new(
+                        db.clone(),
+                        adapter,
+                    )
+                    .with_ai(std::sync::Arc::new(
+                        qing_delivery::application::replies::HttpAiProvider::new(
+                            db.clone(),
+                            qing_delivery::application::settings_sys::SettingsService::new(
+                                db.clone(),
+                                qing_delivery::adapters::windows::keys::DataKey {
+                                    key_id: key.key_id.clone(),
+                                    key: key.key,
+                                },
+                            ),
+                        ),
+                    ))
+                    .with_storage(
+                        data_root.join("uploads"),
+                        qing_delivery::application::ports::platform::CapabilitySet::LIVE,
+                    ),
+                );
             let stop = async move {
                 handles.stop().await;
                 if let Some(m) = browser_close {
@@ -509,10 +551,14 @@ fn build_runtime(
                 Some(authz as std::sync::Arc<dyn QrDriver>),
                 Some(item_sync),
                 verification,
+                Some(chat),
+                Some(order_sync_handle),
                 Some(Box::pin(stop)),
             )
         }
-        qing_delivery::transport::state::ExecutionProfile::Mock => build_mock_runtime(db, key),
+        qing_delivery::transport::state::ExecutionProfile::Mock => {
+            build_mock_runtime(db, key, data_root)
+        }
     }
 }
 
@@ -521,22 +567,60 @@ fn build_runtime(
 fn build_mock_runtime(
     db: DbThread,
     key: &qing_delivery::adapters::windows::keys::DataKey,
+    data_root: &std::path::Path,
 ) -> (
     Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
     Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
     Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
     Option<std::sync::Arc<qing_delivery::application::verification::service::VerificationService>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::chat::ChatOps>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::orders_sync::OrderSyncOps>>,
     Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 ) {
     use qing_delivery::application::manual::actions::ManualOps;
     use qing_delivery::runtime::supervisor;
     let adapter = qing_delivery::adapters::mock::fake::FakeAdapter::new();
-    let handles = supervisor::spawn(db.clone(), key.clone(), adapter, None, None);
+    let handles = supervisor::spawn(db.clone(), key.clone(), adapter.clone(), None, None);
     let manual: std::sync::Arc<dyn ManualOps> = handles.manual.clone();
+    // 007 US6:一键订单同步(mock=假适配器追溯)
+    let order_sync_handle: std::sync::Arc<
+        dyn qing_delivery::application::orders_sync::OrderSyncOps,
+    > = std::sync::Arc::new(
+        qing_delivery::application::orders_sync::OrderSyncService::new(
+            db.clone(),
+            qing_delivery::adapters::windows::keys::DataKey {
+                key_id: key.key_id.clone(),
+                key: key.key,
+            },
+            adapter.clone(),
+        ),
+    );
+    // 007 US4:聊天用例(mock 档能力如实:两项 true,图片上传走本地 uploads);
+    // US7/T077:AI 分支注入 HttpAiProvider(mock 同链路,系统未配 Key 等价 NoAi)
+    let chat: std::sync::Arc<dyn qing_delivery::application::chat::ChatOps> =
+        std::sync::Arc::new(
+            qing_delivery::application::chat::ChatService::new(db.clone(), adapter)
+                .with_ai(std::sync::Arc::new(
+                    qing_delivery::application::replies::HttpAiProvider::new(
+                        db.clone(),
+                        qing_delivery::application::settings_sys::SettingsService::new(
+                            db.clone(),
+                            qing_delivery::adapters::windows::keys::DataKey {
+                                key_id: key.key_id.clone(),
+                                key: key.key,
+                            },
+                        ),
+                    ),
+                ))
+                .with_storage(
+                    data_root.join("uploads"),
+                    qing_delivery::application::ports::platform::CapabilitySet::MOCK,
+                ),
+        );
     let stop = async move {
         handles.stop().await;
     };
-    (Some(manual), None, None, None, Some(Box::pin(stop)))
+    (Some(manual), None, None, None, Some(chat), Some(order_sync_handle), Some(Box::pin(stop)))
 }
 
 #[cfg(not(feature = "dev-fixtures"))]
@@ -544,15 +628,18 @@ fn build_mock_runtime(
 fn build_mock_runtime(
     _db: DbThread,
     _key: &qing_delivery::adapters::windows::keys::DataKey,
+    _data_root: &std::path::Path,
 ) -> (
     Option<std::sync::Arc<dyn qing_delivery::application::manual::actions::ManualOps>>,
     Option<std::sync::Arc<dyn qing_delivery::application::accounts::authorize::QrDriver>>,
     Option<std::sync::Arc<dyn qing_delivery::application::ports::platform::ItemSyncDriver>>,
     Option<std::sync::Arc<qing_delivery::application::verification::service::VerificationService>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::chat::ChatOps>>,
+    Option<std::sync::Arc<dyn qing_delivery::application::orders_sync::OrderSyncOps>>,
     Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 ) {
     // 无 dev-fixtures 的构建不可能进入 mock 分支(启动参数已拒绝)
-    (None, None, None, None, None)
+    (None, None, None, None, None, None, None)
 }
 
 fn check_profile_marker(data_dir: &DataDir, profile: ExecutionProfile) -> std::io::Result<()> {

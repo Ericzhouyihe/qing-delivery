@@ -179,3 +179,170 @@ describe("订单详情:内容揭示走授权 POST 端点(T063/FR-017)", () => {
     });
   });
 });
+
+describe("订单页:一键同步任务轮询与中途取消(US6/T071)", () => {
+  const ACCOUNTS = { items: [{ id: "acct-1", display_name: "小店" }, { id: "acct-2", display_name: "备用号" }] };
+  const REPORTS = JSON.stringify({
+    accounts: [
+      {
+        account_id: "acct-1",
+        orders_seen: 3,
+        created: 1,
+        restored: 1,
+        reassigned: 0,
+        ineligible: 1,
+        failed: [{ order_id: "XY-8", reason: "平台限流" }],
+        coverage: { complete: true }
+      },
+      { account_id: "acct-2", offline: true, orders_seen: 0 }
+    ]
+  });
+
+  const stubJobs = (
+    fetchMock: ReturnType<typeof vi.fn>,
+    states: Array<{ state: string; version: number; result_ref?: string; safe_error?: string }>,
+    cancelAllowedFor: (state: string) => boolean
+  ): void => {
+    let polls = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/v1/orders/syncs")) {
+        return Promise.resolve(jsonResponse({ operation_id: "op-1", job: { id: "job-1", kind: "order_sync", state: "queued", version: 1 } }, 202));
+      }
+      if (url.includes("/api/v1/jobs/job-1/cancel")) {
+        return Promise.resolve(jsonResponse({ operation_id: "op-2", job: { id: "job-1", state: "cancel_requested", version: 99 } }, 202));
+      }
+      if (url.includes("/api/v1/jobs/job-1")) {
+        const s = states[Math.min(polls, states.length - 1)]!;
+        polls += 1;
+        return Promise.resolve(
+          jsonResponse({
+            summary: { id: "job-1", state: s.state, version: s.version, result_ref: s.result_ref, safe_error: s.safe_error },
+            stage: "",
+            cancel_allowed: cancelAllowedFor(s.state)
+          })
+        );
+      }
+      if (url.includes("/api/v1/accounts")) {
+        return Promise.resolve(jsonResponse(ACCOUNTS));
+      }
+      if (url.includes("/api/v1/orders?")) {
+        return Promise.resolve(jsonResponse({ items: [ORDER("o1")], next_cursor: null }));
+      }
+      return Promise.resolve(jsonResponse({}, (init?.method ?? "GET") === "POST" ? 202 : 200));
+    });
+  };
+
+  const startSyncFromToolbar = async (root: HTMLElement): Promise<void> => {
+    const syncBtn = Array.from(root.querySelectorAll("button")).find(
+      (b) => b.textContent === "一键同步订单"
+    ) as HTMLButtonElement;
+    syncBtn.click();
+    const confirm = Array.from(document.querySelectorAll(".modal button")).find(
+      (b) => b.textContent === "开始同步"
+    ) as HTMLButtonElement;
+    confirm.click();
+    await vi.advanceTimersByTimeAsync(0); // 发起 POST /orders/syncs 并进入轮询循环
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    document.querySelectorAll(".drawer, .drawer-overlay, .overlay").forEach((n) => n.remove());
+    document.querySelectorAll("main, div").forEach((n) => {
+      if (n instanceof HTMLElement && n.dataset.testRoot === "1") n.remove();
+    });
+  });
+
+  it("发起同步 → 轮询至 succeeded → 逐账号摘要 + 失败明细悬浮;完成后刷新列表", async () => {
+    const fetchMock = vi.fn();
+    stubJobs(fetchMock, [
+      { state: "running", version: 3 },
+      { state: "succeeded", version: 4, result_ref: REPORTS }
+    ], (s) => s !== "succeeded");
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const root = el("div", { "data-test-root": "1" }) as HTMLElement;
+    document.body.append(root);
+    ordersPage(root);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(root.querySelectorAll("table.data tr.row-click").length).toBe(1);
+    const listCallsBefore = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/api/v1/orders?")).length;
+
+    await startSyncFromToolbar(root);
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/api/v1/orders/syncs"))).toBe(true);
+
+    // 第一轮:running → 反馈行进行中 + 取消任务可见
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(root.textContent).toContain("同步中");
+    const cancelBtn = Array.from(root.querySelectorAll("button")).find((b) => b.textContent === "取消任务") as HTMLButtonElement;
+    expect(cancelBtn.style.display).not.toBe("none");
+
+    // 第二轮:succeeded → 摘要行 + 悬浮明细 + 列表刷新
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(root.textContent).toContain("同步完成(2 个账号)");
+    expect(root.textContent).toContain("小店:新建 1 · 恢复 1 · 修正 0 · 不合格 1 · 失败 1");
+    expect(root.textContent).toContain("备用号:离线跳过");
+    const titles = Array.from(root.querySelectorAll("[title]")).map((n) => n.getAttribute("title") ?? "");
+    expect(titles.some((t) => t.includes("XY-8:平台限流"))).toBe(true);
+    expect(Array.from(root.querySelectorAll("button")).some((b) => b.textContent === "一键同步订单")).toBe(true);
+    const listCallsAfter = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/api/v1/orders?")).length;
+    expect(listCallsAfter).toBe(listCallsBefore + 1);
+  });
+
+  it("取消任务:POST /jobs/{id}/cancel 携带 expected_version;终态 cancelled 如实呈现已处理部分", async () => {
+    const fetchMock = vi.fn();
+    stubJobs(fetchMock, [
+      { state: "running", version: 2 },
+      { state: "cancel_requested", version: 5 },
+      { state: "cancelled", version: 6, result_ref: JSON.stringify({ accounts: [{ account_id: "acct-1", orders_seen: 1, created: 1, restored: 0, reassigned: 0, ineligible: 0, failed: [] }] }) }
+    ], (s) => s === "running");
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const root = el("div", { "data-test-root": "1" }) as HTMLElement;
+    document.body.append(root);
+    ordersPage(root);
+    await vi.advanceTimersByTimeAsync(0);
+    await startSyncFromToolbar(root);
+
+    // 第一轮 running(version 2)→ 点击取消任务
+    await vi.advanceTimersByTimeAsync(2_000);
+    const cancelBtn = Array.from(root.querySelectorAll("button")).find((b) => b.textContent === "取消任务") as HTMLButtonElement;
+    cancelBtn.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const cancelCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/jobs/job-1/cancel"));
+    expect(cancelCall).toBeDefined();
+    expect(JSON.parse(String((cancelCall![1] as RequestInit | undefined)?.body))).toEqual({
+      expected_version: 2,
+      reason: "用户取消"
+    });
+
+    // 第二轮 cancel_requested → 等待账号边界停下
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(root.textContent).toContain("已请求取消");
+
+    // 第三轮 cancelled → 已处理部分保留 + 部分摘要
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(root.textContent).toContain("已取消,已处理部分保留(1 个账号)");
+    expect(root.textContent).toContain("小店:新建 1 · 恢复 0 · 修正 0 · 不合格 0 · 失败 0");
+  });
+
+  it("终态 failed:如实展示 safe_error,不虚报", async () => {
+    const fetchMock = vi.fn();
+    stubJobs(fetchMock, [
+      { state: "running", version: 2 },
+      { state: "failed", version: 3, safe_error: "数据库锁定" }
+    ], (s) => s === "running");
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const root = el("div", { "data-test-root": "1" }) as HTMLElement;
+    document.body.append(root);
+    ordersPage(root);
+    await vi.advanceTimersByTimeAsync(0);
+    await startSyncFromToolbar(root);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(root.textContent).toContain("同步失败:数据库锁定");
+  });
+});

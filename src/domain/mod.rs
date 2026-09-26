@@ -4,11 +4,15 @@
 
 pub mod accounts;
 pub mod cards;
+pub mod chat;
 pub mod crypto;
 pub mod delivery;
 pub mod ids;
 pub mod money;
+pub mod notify;
 pub mod orders;
+pub mod rules_ext;
 pub mod sku;
 pub mod stats;
+pub mod templates;
 pub mod time_util;

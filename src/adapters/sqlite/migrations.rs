@@ -19,6 +19,14 @@ const MIGRATIONS: &[(i64, &str)] = &[
         4,
         include_str!("../../../migrations/0004_cards_templates_rules.sql"),
     ),
+    (
+        5,
+        include_str!("../../../migrations/0005_chat.sql"),
+    ),
+    (
+        6,
+        include_str!("../../../migrations/0006_notify_ai.sql"),
+    ),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -96,7 +104,7 @@ mod tests {
 
     /// 实体表总数(不含 sqlite 内部表与 schema_migrations)。
     /// 随迁移追加更新:T007(0004,+10)→35、T046(0005,+4)→39、T058(0006,+5)→44。
-    const EXPECTED_TABLE_COUNT: i64 = 35;
+    const EXPECTED_TABLE_COUNT: i64 = 44;
 
     const ENTITY_TABLES: &[&str] = &[
         "installation",
@@ -135,6 +143,17 @@ mod tests {
         "default_replies",
         "default_reply_log",
         "review_reminder_state",
+        // 007 增量 2(0005,T046)
+        "conversations",
+        "chat_messages",
+        "quick_replies",
+        "buyer_notes",
+        // 007 增量 3(0006,T058)
+        "notification_channels",
+        "notification_bindings",
+        "notification_deliveries",
+        "system_settings",
+        "system_secrets",
     ];
 
     #[test]

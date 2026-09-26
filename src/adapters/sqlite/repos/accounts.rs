@@ -20,6 +20,9 @@ pub struct AccountRow {
     pub control_epoch: i64,
     pub credential_epoch: i64,
     pub version: i64,
+    /// 007 US7:账号级 AI 自动回复开关与提示词(默认关;提示词明文,非机密)。
+    pub ai_reply_enabled: bool,
+    pub ai_prompt: Option<String>,
 }
 
 /// 插入或按 (platform, external_user_id) 幂等返回现有账号;三开关默认关闭(FR-003)。
@@ -47,7 +50,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<AccountRow>> 
     conn.query_row(
         "SELECT id, platform, external_user_id, display_name, avatar_url, remark, runtime_enabled,
                 auto_delivery_enabled, auto_confirm_enabled, monitor_since, status,
-                control_epoch, credential_epoch, version
+                control_epoch, credential_epoch, version, ai_reply_enabled, ai_prompt
          FROM accounts WHERE id = ?1",
         params![id],
         row,
@@ -63,7 +66,7 @@ pub fn find_by_external(
     conn.query_row(
         "SELECT id, platform, external_user_id, display_name, avatar_url, remark, runtime_enabled,
                 auto_delivery_enabled, auto_confirm_enabled, monitor_since, status,
-                control_epoch, credential_epoch, version
+                control_epoch, credential_epoch, version, ai_reply_enabled, ai_prompt
          FROM accounts WHERE platform = ?1 AND external_user_id = ?2",
         params![platform, external_user_id],
         row,
@@ -87,6 +90,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
         control_epoch: r.get(11)?,
         credential_epoch: r.get(12)?,
         version: r.get(13)?,
+        ai_reply_enabled: r.get::<_, i64>(14)? != 0,
+        ai_prompt: r.get(15)?,
     })
 }
 
@@ -136,7 +141,7 @@ pub fn list(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<AccountRow>> 
     let mut stmt = conn.prepare(
         "SELECT id, platform, external_user_id, display_name, avatar_url, remark, runtime_enabled,
                 auto_delivery_enabled, auto_confirm_enabled, monitor_since, status,
-                control_epoch, credential_epoch, version
+                control_epoch, credential_epoch, version, ai_reply_enabled, ai_prompt
          FROM accounts WHERE status != 'deleted' ORDER BY created_at DESC LIMIT ?1",
     )?;
     let rows = stmt
@@ -156,6 +161,8 @@ pub fn list(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<AccountRow>> 
                 control_epoch: r.get(11)?,
                 credential_epoch: r.get(12)?,
                 version: r.get(13)?,
+                ai_reply_enabled: r.get::<_, i64>(14)? != 0,
+                ai_prompt: r.get(15)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<AccountRow>>>()?;
@@ -192,6 +199,39 @@ pub fn set_remark(conn: &Connection, id: &str, remark: Option<&str>) -> rusqlite
         "UPDATE accounts SET remark = ?2, version = version + 1, updated_at = ?3
          WHERE id = ?1",
         rusqlite::params![id, remark, crate::domain::time_util::utc_now_ms()],
+    )?;
+    Ok(n == 1)
+}
+
+// ---------- 007 US7:账号级 AI 自动回复(FR-071) ----------
+
+/// 账号 AI 设置(0006 迁移列;None=账号不存在)。
+pub fn get_ai_settings(
+    conn: &Connection,
+    id: &str,
+) -> rusqlite::Result<Option<(bool, Option<String>)>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT ai_reply_enabled, ai_prompt FROM accounts WHERE id = ?1",
+        rusqlite::params![id],
+        |r| Ok((r.get::<_, i64>(0)? != 0, r.get(1)?)),
+    )
+    .optional()
+}
+
+/// 写账号 AI 开关/提示词(prompt 由调用方校验长度;NULL=清空)。
+/// 返回 false=账号不存在。
+pub fn set_ai_settings(
+    conn: &Connection,
+    id: &str,
+    enabled: bool,
+    prompt: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE accounts SET ai_reply_enabled = ?2, ai_prompt = ?3, version = version + 1,
+             updated_at = ?4
+         WHERE id = ?1",
+        rusqlite::params![id, enabled as i64, prompt, crate::domain::time_util::utc_now_ms()],
     )?;
     Ok(n == 1)
 }

@@ -22,6 +22,8 @@ const acct = (over: Partial<AccountCard>): AccountCard => ({
   autoConfirm: false,
   controlVersion: 1,
   monitoringSince: null,
+  aiReplyEnabled: false,
+  aiPrompt: null,
   ...over
 });
 
@@ -94,6 +96,20 @@ describe("账号解析(迁移自 page.ts,保持既有行为)", () => {
     expect(b.connectionState).toBe("paused");
     expect(b.controlVersion).toBe(1);
   });
+
+  it("007 US7:解析账号级 AI 字段;缺失按关闭/无提示词降级", () => {
+    const a = parseAccountCard({
+      id: "acct-ai",
+      ai_reply_enabled: true,
+      ai_prompt: "你是小店客服"
+    });
+    expect(a.aiReplyEnabled).toBe(true);
+    expect(a.aiPrompt).toBe("你是小店客服");
+
+    const b = parseAccountCard({ id: "y" });
+    expect(b.aiReplyEnabled).toBe(false);
+    expect(b.aiPrompt).toBeNull();
+  });
 });
 
 describe("异常置顶排序 sortAccounts(US2/FR-006,数据模型 §2)", () => {
@@ -151,17 +167,26 @@ describe("能力徽标派生 deriveCapabilityTags(US2/FR-008,数据模型 §2)",
     expect(deriveCapabilityTags(acct({ connectionState: "online" }))).toEqual([]);
   });
 
-  it("不虚标不变量:任意输入输出 ⊆ 真实能力集合,绝不出现 AI/自动评价/每日擦亮", () => {
-    const allowed = new Set(["needs-verify", "auto-delivery", "auto-confirm"]);
-    const forbidden = ["AI", "自动评价", "每日擦亮", "ai", "auto-review"];
+  it("007 US7:ai_reply_enabled → 「AI 回复」徽标(info);关闭不出现", () => {
+    expect(deriveCapabilityTags(acct({ aiReplyEnabled: true }))).toEqual([
+      { id: "ai-reply", label: "AI 回复", tone: "info" }
+    ]);
+    expect(deriveCapabilityTags(acct({ aiReplyEnabled: false }))).toEqual([]);
+  });
+
+  it("不虚标不变量:任意输入输出 ⊆ 真实能力集合(AI 回复自 007 起为真实能力);绝不出现自动评价/每日擦亮", () => {
+    const allowed = new Set(["needs-verify", "auto-delivery", "auto-confirm", "ai-reply"]);
+    const forbidden = ["自动评价", "每日擦亮", "auto-review"];
     const states = ["online", "offline", "connecting", "verification_required", "authorization_expired", "paused", "unknown-x"];
     for (const connectionState of states) {
       for (const autoDelivery of [true, false]) {
         for (const autoConfirm of [true, false]) {
-          const tags = deriveCapabilityTags(acct({ connectionState, autoDelivery, autoConfirm }));
-          for (const t of tags) {
-            expect(allowed.has(t.id)).toBe(true);
-            for (const f of forbidden) expect(t.label).not.toContain(f);
+          for (const aiReplyEnabled of [true, false]) {
+            const tags = deriveCapabilityTags(acct({ connectionState, autoDelivery, autoConfirm, aiReplyEnabled }));
+            for (const t of tags) {
+              expect(allowed.has(t.id)).toBe(true);
+              for (const f of forbidden) expect(t.label).not.toContain(f);
+            }
           }
         }
       }

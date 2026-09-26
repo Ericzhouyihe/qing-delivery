@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { validateContent, CONTENT_LIMITS } from "./rule-editor";
+import { validateContent, CONTENT_LIMITS, renderRuleForm, defaultRuleFormValue, validateRuleForm } from "./rule-editor";
 import { filterItems, parseItem, type ProductItem } from "./products";
 import { parseMatchOutcome, renderMatchOutcome, renderMatchPreview } from "./match-preview";
 import { el } from "../../shared/dom";
@@ -86,5 +86,94 @@ describe("预演面板只经端点判定(前端零匹配算法)", () => {
     const call = fetchMock.mock.calls.find((c) => String(c[0]).includes("match-preview"));
     expect(call).toBeDefined();
     expect(String(call![0])).toContain("/api/v1/accounts/a1/rules/match-preview");
+  });
+});
+
+// ===== 007 T040:renderRuleForm 提取后的回归(抽屉/规则页共用表单主体)=====
+
+describe("renderRuleForm 回归(拆分后表单主体可用)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const sampleItem = parseItem({ id: "i1", account_id: "a1", platform_item_id: "P1", title: "网盘资料", status: "on_sale" });
+
+  it("默认值校验失败(空内容),输入后内容预演仍走服务端 preview 端点", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ rendered_text: "链接 x", unicode_scalars: 4, utf8_bytes: 7, valid: true, violations: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const container = el("div");
+    const handle = renderRuleForm(container, {
+      accountId: "a1",
+      items: [sampleItem],
+      pools: [{ id: "p1", name: "卡池", enabled: true }],
+      templates: [{ id: "t1", name: "模板", enabled: true }],
+      value: { ...defaultRuleFormValue(), itemId: "i1" }
+    });
+    // 默认固定文字空内容 → 校验不通过
+    expect(handle.validate().length).toBeGreaterThan(0);
+    // 填入正文 → 通过
+    const area = container.querySelector("textarea") as HTMLTextAreaElement;
+    area.value = "链接 x";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(handle.validate()).toEqual([]);
+    // 内容预演:仍调用 rules/preview(fixed_text 行为保留)
+    const previewBtn = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "内容预演")!;
+    previewBtn.click();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("链接 x");
+    });
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes("/rules/preview"));
+    expect(call).toBeDefined();
+    expect(String(call![0])).toContain("/api/v1/accounts/a1/rules/preview");
+    const body = JSON.parse(String(call![1]?.body)) as Record<string, unknown>;
+    expect(body["item_id"]).toBe("i1");
+    expect(body["content"]).toBe("链接 x");
+  });
+
+  it("表单嵌入匹配预览面板(零改动复用)并呈现账号级确认开关", () => {
+    const container = el("div");
+    renderRuleForm(container, {
+      accountId: "a1",
+      items: [sampleItem],
+      pools: [],
+      templates: [],
+      value: defaultRuleFormValue()
+    });
+    expect(container.textContent).toContain("匹配预览");
+    expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent === "预览匹配")).toBe(true);
+    // 默认账号级:确认开关可见,警示在场;切到商品后随确认块隐藏
+    expect(container.textContent).toContain("适用于全部商品");
+    const confirmWarn = Array.from(container.querySelectorAll("div")).find(
+      (d) => d.textContent?.includes("需确认·暂不发货") === true
+    )!;
+    expect(confirmWarn.hidden).toBe(false);
+    // 下拉顺序:触发类型 → 商品范围(第二个)→ 内容来源…
+    const selects = Array.from(container.querySelectorAll("select")) as HTMLSelectElement[];
+    const scopeSel = selects[1]!;
+    scopeSel.value = "i1";
+    scopeSel.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(confirmWarn.hidden).toBe(true);
+    // 变体添加入口在场
+    expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent === "+ 添加变体")).toBe(true);
+  });
+
+  it("求评触发隐藏内容来源与变体区,校验求评四字段", () => {
+    const container = el("div");
+    const handle = renderRuleForm(container, {
+      accountId: "a1",
+      items: [sampleItem],
+      pools: [],
+      templates: [],
+      value: { ...defaultRuleFormValue(), triggerType: "review_missing_timeout", itemId: "i1" }
+    });
+    const errors = handle.validate();
+    expect(errors.join(";")).toContain("求评文案不能为空");
+    expect(validateRuleForm({ ...defaultRuleFormValue(), triggerType: "review_missing_timeout" }).length).toBeGreaterThan(0);
+    // 触发类型/商品范围仍可见;变体与来源区隐藏(hidden 属性)
+    const hiddenBlocks = Array.from(container.querySelectorAll("div[hidden], h3"));
+    expect(container.textContent).toContain("求评计划");
   });
 });

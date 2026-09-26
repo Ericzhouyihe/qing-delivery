@@ -76,7 +76,9 @@ export function mountShell(root: HTMLElement, nav: ShellNav[], onLogout: () => v
   const shell = el("div", { class: "app-shell" }, side, top, main);
   root.replaceChildren(shell);
 
+  let lastActive = "/";
   const refresh = (activePath: string): void => {
+    lastActive = activePath;
     for (const [path, a] of links) {
       a.classList.toggle("active", path === activePath);
     }
@@ -95,6 +97,14 @@ export function mountShell(root: HTMLElement, nav: ShellNav[], onLogout: () => v
       }
     }
   };
+
+  // 007 T053:徽标数值通常随页面轮询变化(如在线聊天 unread-summary),
+  // 而 refresh 仅在路由切换时被调用;页面通过该事件请求按当前路由重算徽标。
+  const onBadgesChanged = (): void => {
+    if (!shell.isConnected) return; // 登出后外壳已卸载:忽略陈旧事件
+    refresh(lastActive);
+  };
+  document.addEventListener("qing:badges-changed", onBadgesChanged);
 
   return {
     main,

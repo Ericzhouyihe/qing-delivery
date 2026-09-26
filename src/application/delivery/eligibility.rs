@@ -20,6 +20,9 @@ pub struct EligibilityInput<'a> {
     pub enabled_rule: Option<&'a str>,
     /// 规则范围是否存在多条启用(执行时歧义检测,FR-008)
     pub rule_ambiguous: bool,
+    /// 007 US3(T034):命中规则需确认(账号级未确认)或需重新配置(引用缺失)
+    /// → 需配置详情,转待处理不执行;Some 时优先于规则命中判定
+    pub rule_needs_config: Option<&'a str>,
     /// 显式历史接管(FR-017):允许 paid_at 早于监控起点,但不放宽其他核验
     pub allow_historical: bool,
 }
@@ -52,6 +55,9 @@ pub enum Reason {
     NoRule,
     #[error("规则范围歧义(多条启用),不得任选一条")]
     RuleAmbiguous,
+    /// 007 US3(T034):规则需确认·暂不发货(账号级未确认)或需重新配置(引用缺失)
+    #[error("{0}")]
+    RuleNeedsConfig(String),
 }
 
 pub fn verify(input: &EligibilityInput<'_>) -> Eligibility {
@@ -85,6 +91,10 @@ pub fn verify(input: &EligibilityInput<'_>) -> Eligibility {
     }
     if input.rule_ambiguous {
         return Eligibility::NotEligible(Reason::RuleAmbiguous);
+    }
+    if let Some(detail) = input.rule_needs_config {
+        // FR-032/data-model:需确认或需重新配置的规则旁路执行,转待处理
+        return Eligibility::NotEligible(Reason::RuleNeedsConfig(detail.to_string()));
     }
     match input.enabled_rule {
         Some(rule_id) => Eligibility::Eligible(rule_id.to_string()),
@@ -132,6 +142,7 @@ mod tests {
             item_listing_state: "on_sale",
             enabled_rule: Some("rule-1"),
             rule_ambiguous: false,
+            rule_needs_config: None,
         }
     }
 
@@ -193,5 +204,19 @@ mod tests {
         let mut i = input(&s);
         i.enabled_rule = None;
         assert_eq!(verify(&i), Eligibility::NotEligible(Reason::NoRule));
+    }
+
+    /// 007 US3(T034):需确认/需重新配置的规则旁路执行,转待处理。
+    #[test]
+    fn needs_config_rule_bypasses_execution() {
+        let s = complete_snapshot().build();
+        let mut i = input(&s);
+        i.rule_needs_config = Some("账号级规则未确认,需确认·暂不发货");
+        assert_eq!(
+            verify(&i),
+            Eligibility::NotEligible(Reason::RuleNeedsConfig(
+                "账号级规则未确认,需确认·暂不发货".into()
+            ))
+        );
     }
 }

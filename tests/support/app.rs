@@ -20,6 +20,8 @@ pub struct TestApp {
     pub router: axum::Router,
     /// 002 起 contract 测试可经此直接播种数据(真实 DB 线程,与路由同一实例)。
     pub db: DbThread,
+    /// 007 US7:聊天用例句柄(摄取买家消息驱动 AI 分流测试;与路由同 DB)。
+    pub chat: std::sync::Arc<dyn qing_delivery::application::chat::ChatOps>,
     _dir: tempfile::TempDir,
     _lock: DirLock,
 }
@@ -43,6 +45,31 @@ pub async fn spawn_app() -> TestApp {
         .expect("迁移提交")
         .expect("迁移应用");
     let bind: SocketAddr = "127.0.0.1:59189".parse().unwrap();
+    // 007 US4:契约测试的聊天端点走 FakeAdapter(mock 能力:chat_send_image=true)
+    // 007 US7:AI 分支注入 HttpAiProvider(系统设置驱动;未配 key 等价 NoAi 直落默认)
+    let chat: std::sync::Arc<dyn qing_delivery::application::chat::ChatOps> =
+        std::sync::Arc::new(
+            qing_delivery::application::chat::ChatService::new(
+                db.clone(),
+                qing_delivery::adapters::mock::fake::FakeAdapter::new(),
+            )
+            .with_ai(std::sync::Arc::new(
+                qing_delivery::application::replies::HttpAiProvider::new(
+                    db.clone(),
+                    qing_delivery::application::settings_sys::SettingsService::new(
+                        db.clone(),
+                        qing_delivery::adapters::windows::keys::DataKey {
+                            key_id: key.key_id.clone(),
+                            key: key.key,
+                        },
+                    ),
+                ),
+            ))
+            .with_storage(
+                data_dir.root.join("uploads"),
+                qing_delivery::application::ports::platform::CapabilitySet::MOCK,
+            ),
+        );
     let state = AppState::new(
         AdminAuth::new(db.clone()),
         JobService::new(db.clone()),
@@ -61,12 +88,15 @@ pub async fn spawn_app() -> TestApp {
         None,
         None,
         None,
+        Some(chat.clone()),
+        None,
         ServeConfig::for_bind(bind, ExecutionProfile::Live),
         key,
     );
     TestApp {
         router: routes::router(state),
         db,
+        chat,
         _dir: dir,
         _lock: lock,
     }

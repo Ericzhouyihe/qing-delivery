@@ -37,6 +37,9 @@ fn account_summary(row: &repo::AccountRow) -> serde_json::Value {
         },
         "control_version": row.version,
         "monitoring_since": row.monitor_since.map(format_rfc3339),
+        // 007 US7:账号级 AI 开关(徽标用)与提示词(编辑弹窗预填;明文非机密)
+        "ai_reply_enabled": row.ai_reply_enabled,
+        "ai_prompt": row.ai_prompt,
         "restore_quarantined": false,
     })
 }

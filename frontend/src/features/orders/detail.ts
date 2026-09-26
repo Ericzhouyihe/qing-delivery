@@ -8,7 +8,7 @@ import { btn } from "../../ui/dom";
 import { badgeEl, confirmationBadge, deliveryBadge, reviewBadge } from "../../ui/badge";
 import { renderTimeline, type TimelineNode } from "../../ui/timeline";
 import { openConfirmFlow } from "../../ui/confirm-flow";
-import { actionAvailability, manualActionBody, parseOrderRow, type ManualAction, type OrderRow } from "./model";
+import { actionAvailability, manualActionBody, parseOrderRow, singleSyncOutcomeLabel, type ManualAction, type OrderRow } from "./model";
 import { formatAbsolute } from "../../ui/time";
 
 interface OrderDetail {
@@ -107,6 +107,21 @@ const ACTION_META: Record<ManualAction, { label: string; endpoint: string; requi
     requireRisk: true,
     riskText: "我确认接管监控起点之前的该笔订单,将由我在平台人工发货并自行负责",
     impact: "接管后该订单停止自动处理,由你在平台手动发货并在完成后回来标记。"
+  },
+  // 007 US6(T071):人工触发交付 / 确认平台已发货(均不要求风险勾选,原因必填留痕)
+  trigger_delivery: {
+    label: "人工触发交付",
+    endpoint: "deliveries",
+    requireRisk: false,
+    riskText: "",
+    impact: "按既有规则匹配并发送给买家;付款事实缺失会被拒绝"
+  },
+  confirm_shipment: {
+    label: "确认平台已发货",
+    endpoint: "confirm-shipments",
+    requireRisk: false,
+    riskText: "",
+    impact: "独立确认平台发货状态,不影响消息交付记录"
   }
 };
 
@@ -186,9 +201,34 @@ export function openOrderDetail(row: OrderRow, onChanged: () => void): void {
       });
       handle.body.append(el("h3", { style: "margin-top:12px;" }, "交付内容"), el("div", { style: "display:flex;gap:8px;align-items:flex-start;" }, revealBtn, revealBox));
 
+      // 单笔同步(US6/T071):对该订单直接走一次交付管线,同步返回 HandleOutcome
+      const singleSyncBtn = btn("单笔同步", { variant: "secondary" });
+      const singleSyncFeedback = el("span", { class: "muted", style: "font-size:var(--text-xs);" }, "");
+      singleSyncBtn.addEventListener("click", async () => {
+        singleSyncBtn.disabled = true;
+        singleSyncFeedback.className = "muted";
+        singleSyncFeedback.textContent = "同步中…";
+        try {
+          const res = (await httpPost(`/api/v1/accounts/${row.accountId}/orders/${row.id}/syncs`, {})) as Record<string, unknown>;
+          const label = singleSyncOutcomeLabel(String(res["outcome"] ?? "unknown"));
+          singleSyncFeedback.className = "tone-normal";
+          singleSyncFeedback.textContent = `结果:${label}`;
+          onChanged();
+        } catch (e) {
+          singleSyncFeedback.className = "error-text";
+          singleSyncFeedback.textContent = `失败:${e instanceof Error ? e.message : String(e)}`;
+        } finally {
+          singleSyncBtn.disabled = false;
+        }
+      });
+      handle.body.append(
+        el("h3", { style: "margin-top:12px;" }, "订单同步"),
+        el("div", { style: "display:flex;gap:8px;align-items:center;" }, singleSyncBtn, singleSyncFeedback)
+      );
+
       // 人工动作区:按展示状态启停 + 禁用原因;服务端 guard 权威(FR-017)
       const actionsBox = el("div", { style: "display:flex;flex-wrap:wrap;gap:8px;" });
-      for (const action of ["resend", "mark_received", "terminate", "takeover"] as ManualAction[]) {
+      for (const action of ["resend", "mark_received", "terminate", "takeover", "trigger_delivery", "confirm_shipment"] as ManualAction[]) {
         const meta = ACTION_META[action];
         const avail = actionAvailability(action, detail.delivery?.state ?? null, detail.delivery?.confirmationState ?? null);
         const actionBtn = btn(meta.label, {

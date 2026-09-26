@@ -202,6 +202,20 @@ pub fn get_order_external(conn: &Connection, order_id: &str) -> rusqlite::Result
     .optional()
 }
 
+/// 内部订单 ID →(平台订单号, 金额最小单位, 币种)(007 T062 通知摘要)。
+#[allow(clippy::type_complexity)]
+pub fn get_order_notify_ref(
+    conn: &Connection,
+    order_id: &str,
+) -> rusqlite::Result<Option<(Option<String>, Option<i64>, Option<String>)>> {
+    conn.query_row(
+        "SELECT external_order_id, amount_minor, currency FROM orders WHERE id = ?1",
+        params![order_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+}
+
 pub struct OrderSummaryRow {
     pub id: String,
     pub account_id: String,

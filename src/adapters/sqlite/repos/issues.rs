@@ -17,6 +17,8 @@ pub struct IssueRow {
 }
 
 /// 打开待处理事项;相同 (order, kind, reason) 未解决时返回已存在行。
+/// 无订单事项(007 0006 起)按 (account, kind, reason) 未解决去重
+/// (与 idx_issues_open_dedup_account 索引一致;预查避免唯一索引冲突)。
 pub fn open(
     conn: &Connection,
     id: &str,
@@ -27,18 +29,28 @@ pub fn open(
     reason_code: &str,
     allowed_actions: &str,
 ) -> rusqlite::Result<IssueRow> {
-    if let Some(order_id) = order_id {
-        let existing: Option<String> = conn
-            .query_row(
+    let existing: Option<String> = match order_id {
+        Some(order_id) => {
+            conn.query_row(
                 "SELECT id FROM issues WHERE order_id = ?1 AND kind = ?2 AND reason_code = ?3
                  AND state = 'open'",
                 params![order_id, kind, reason_code],
                 |r| r.get(0),
             )
-            .optional()?;
-        if let Some(existing_id) = existing {
-            return get(conn, &existing_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows);
+            .optional()?
         }
+        None => {
+            conn.query_row(
+                "SELECT id FROM issues WHERE account_id = ?1 AND kind = ?2 AND reason_code = ?3
+                 AND state = 'open' AND order_id IS NULL",
+                params![account_id, kind, reason_code],
+                |r| r.get(0),
+            )
+            .optional()?
+        }
+    };
+    if let Some(existing_id) = existing {
+        return get(conn, &existing_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows);
     }
     conn.execute(
         "INSERT INTO issues(id, order_id, account_id, delivery_id, kind, reason_code,

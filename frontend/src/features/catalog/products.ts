@@ -1,9 +1,8 @@
-/** 商品区(US4/T034):表格 + 筛选(账号/仅已配置/关键字)+ 同步反馈(FR-012)。 */
-import { el } from "../../shared/dom";
+/** 商品共享内核(US4/T034 建立;007 T040 拆分后由 features/items 复用):
+ *  契约解析 + 筛选(账号/仅已配置/关键字)+ 同步轮询反馈(FR-012)。
+ *  列表渲染在 features/items/page.ts(含「关联发货规则」跨页跳转)。 */
 import { httpGet, httpPost } from "../../shared/http";
 import { isRecord } from "../../shared/contracts";
-import { badgeEl, itemStatusBadge, ruleStateBadge } from "../../ui/badge";
-import { btn, truncate } from "../../ui/dom";
 
 export interface ProductItem {
   id: string;
@@ -49,85 +48,6 @@ export function filterItems(items: ProductItem[], f: ProductFilter): ProductItem
     if (kw !== "" && !it.title.toLowerCase().includes(kw) && !it.platformItemId.toLowerCase().includes(kw)) return false;
     return true;
   });
-}
-
-/** 商品筛选栏 + 表格;点击行回调打开规则编辑抽屉(US4)。 */
-export function renderProducts(
-  container: HTMLElement,
-  items: ProductItem[],
-  accounts: AccountRef[],
-  onOpenRule: (item: ProductItem) => void
-): void {
-  const accountSel = el("select", {}) as HTMLSelectElement;
-  accountSel.append(el("option", { value: "" }, "全部账号"));
-  for (const a of accounts) {
-    accountSel.append(el("option", { value: a.id }, a.displayName));
-  }
-  const configured = el("input", { type: "checkbox" });
-  const configuredLabel = el("label", { class: "check-row", style: "margin:0;" }, configured, "仅看已配置规则");
-  const keyword = el("input", { type: "text", placeholder: "搜索商品标题 / 平台 ID" });
-  const clearBtn = btn("清空筛选", { variant: "ghost" });
-
-  const tableBox = el("div", {});
-  const apply = (): void => {
-    const filtered = filterItems(items, {
-      accountId: accountSel.value === "" ? null : accountSel.value,
-      configuredOnly: configured.checked,
-      keyword: keyword.value
-    });
-    tableBox.replaceChildren();
-    if (filtered.length === 0) {
-      tableBox.append(
-        el("div", { class: "empty-state" }, el("div", { class: "empty-ico" }, "🔍"), el("div", {}, "没有符合条件的商品"))
-      );
-      return;
-    }
-    const table = el("table", { class: "data" });
-    table.append(
-      el(
-        "tr",
-        {},
-        el("th", {}, "商品"),
-        el("th", {}, "平台 ID"),
-        el("th", {}, "状态"),
-        el("th", {}, "规则"),
-        el("th", {}, "操作")
-      )
-    );
-    for (const it of filtered) {
-      const openBtn = btn("配置规则", { variant: "primary" });
-      openBtn.addEventListener("click", () => onOpenRule(it));
-      const tr = el(
-        "tr",
-        { class: "row-click" },
-        el("td", {}, el("span", { class: "thumb" }), truncate(it.title, 20)),
-        el("td", { class: "mono" }, it.platformItemId),
-        el("td", {}, badgeEl(itemStatusBadge(it.status), it.status)),
-        el("td", {}, badgeEl(ruleStateBadge(it.ruleState), it.ruleState)),
-        el("td", {}, openBtn)
-      );
-      tr.addEventListener("click", (ev) => {
-        if (ev.target instanceof HTMLButtonElement) return;
-        onOpenRule(it);
-      });
-      table.append(tr);
-    }
-    tableBox.append(table);
-  };
-
-  accountSel.addEventListener("change", apply);
-  keyword.addEventListener("input", apply);
-  configured.addEventListener("change", apply);
-  clearBtn.addEventListener("click", () => {
-    accountSel.value = "";
-    keyword.value = "";
-    configured.checked = false;
-    apply();
-  });
-
-  const bar = el("div", { class: "filter-bar" }, accountSel, configuredLabel, keyword, clearBtn);
-  apply();
-  container.replaceChildren(bar, tableBox);
 }
 
 /** 同步反馈(T034/收敛):接受 → 轮询任务至终态 → 展示结果并刷新列表;

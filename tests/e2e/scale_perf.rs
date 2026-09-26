@@ -285,6 +285,7 @@ async fn sc001_rule_config_path_timing() {
                 sku_key,
                 content: "https://example.com/final\n提取码 ok12".into(),
                 enabled: true,
+                ..Default::default()
             },
         )
         .await

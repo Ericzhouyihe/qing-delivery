@@ -14,6 +14,9 @@ export interface AccountCard {
   autoConfirm: boolean;
   controlVersion: number;
   monitoringSince: string | null;
+  /** 007 US7:账号级 AI 自动回复(旧服务缺失该字段时按 false 降级)。 */
+  aiReplyEnabled: boolean;
+  aiPrompt: string | null;
 }
 
 export function parseAccountCard(v: unknown): AccountCard {
@@ -30,7 +33,9 @@ export function parseAccountCard(v: unknown): AccountCard {
     autoDelivery: c["auto_delivery_enabled"] === true,
     autoConfirm: c["auto_confirm_enabled"] === true,
     controlVersion: typeof v["control_version"] === "number" ? v["control_version"] : 1,
-    monitoringSince: typeof v["monitoring_since"] === "string" ? v["monitoring_since"] : null
+    monitoringSince: typeof v["monitoring_since"] === "string" ? v["monitoring_since"] : null,
+    aiReplyEnabled: v["ai_reply_enabled"] === true,
+    aiPrompt: typeof v["ai_prompt"] === "string" ? v["ai_prompt"] : null
   };
 }
 
@@ -72,9 +77,10 @@ export function sortAccounts(items: readonly AccountCard[]): AccountCard[] {
 }
 
 /** 能力/状态徽标(US2/FR-008):只映射系统真实具备的能力,不虚标参考图中的
- *  未实现功能(AI、自动评价、每日擦亮);连接状态徽章另由 accountBadge 呈现。 */
+ *  未实现功能(自动评价、每日擦亮);AI 自动回复自 007 US7 起为真实能力(FR-071);
+ *  连接状态徽章另由 accountBadge 呈现。 */
 export interface CapabilityTag {
-  id: "needs-verify" | "auto-delivery" | "auto-confirm";
+  id: "needs-verify" | "auto-delivery" | "auto-confirm" | "ai-reply";
   label: string;
   tone: "normal" | "warning" | "info" | "neutral";
 }
@@ -86,6 +92,7 @@ export function deriveCapabilityTags(a: AccountCard): CapabilityTag[] {
   }
   if (a.autoDelivery) tags.push({ id: "auto-delivery", label: "自动发货", tone: "normal" });
   if (a.autoConfirm) tags.push({ id: "auto-confirm", label: "自动平台确认", tone: "normal" });
+  if (a.aiReplyEnabled) tags.push({ id: "ai-reply", label: "AI 回复", tone: "info" });
   return tags;
 }
 

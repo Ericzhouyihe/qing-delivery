@@ -16,8 +16,9 @@ use crate::adapters::xianyu::ws::real::{
     self, SessionEnd, SyncMessage, WsHandle, generate_msg_uuid,
 };
 use crate::application::ports::platform::{
-    AuthorizationSession, ConfirmOutcome, ContentForSend, EventMeta, PlatformAdapter,
-    PlatformError, ProductPage, ProductRecord, RequestContext, SendOutcome, SendProof, TraceReport,
+    AuthorizationSession, ChatPeer, ChatSendKind, ConfirmOutcome, ContentForSend, EventMeta,
+    PlatformAdapter, PlatformError, ProductPage, ProductRecord, RequestContext, SendOutcome,
+    SendProof, TraceReport,
 };
 use crate::domain::money::Money;
 use crate::domain::orders::snapshot::{FieldStatus, OrderSnapshot, PlatformOrderState, TradeType};
@@ -276,6 +277,85 @@ impl XianyuAdapter {
         })
     }
 
+    // ---------- 消息发送(send_text 与 send_chat_message 共用通道) ----------
+
+    /// sendByReceiverScope 文本提交 + 严格回显判定(交付与聊天同一可靠性语义,§6)。
+    async fn ws_chat_send(
+        &self,
+        external_id: &str,
+        ws: crate::adapters::xianyu::ws::real::WsHandle,
+        chat_id: &str,
+        buyer_id: &str,
+        content: &ContentForSend,
+    ) -> Result<SendOutcome, PlatformError> {
+        let inner = json!({"contentType": 1, "text": {"text": content.text}});
+        let inner_b64 = base64::engine::general_purpose::STANDARD.encode(inner.to_string());
+        let my_id = format!("{}@goofish", external_id);
+        let body = json!([
+            {
+                "uuid": generate_msg_uuid(),
+                "cid": format!("{chat_id}@goofish"),
+                "conversationType": 1,
+                "content": {"contentType": 101, "custom": {"type": 1, "data": inner_b64}},
+                "redPointPolicy": 0,
+                "extension": {"extJson": "{}"},
+                "ctx": {"appVersion": "1.0", "platform": "web"},
+                "mtags": {},
+                "msgReadStatusSetting": 1,
+            },
+            {"actualReceivers": [format!("{}@goofish", buyer_id.trim_end_matches("@goofish")), my_id.clone()]}
+        ]);
+        let mid = real::generate_mid();
+        let mut headers = HashMap::new();
+        headers.insert("mid".to_string(), json!(mid.clone()));
+        let response = ws
+            .request("/r/MessageSend/sendByReceiverScope", headers, Some(body))
+            .await
+            .map_err(ws_rpc_to_platform)?;
+        let code = response.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+        if code == 200 {
+            // 严格回显:裸 200 不构成接纳(§6)
+            let body = response.get("body").cloned().unwrap_or(Value::Null);
+            let message_id = body.get("messageId").and_then(|v| v.as_str()).unwrap_or("");
+            let sender = body
+                .get("extension")
+                .and_then(|e| e.get("senderUserId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let echoed = body
+                .get("content")
+                .and_then(|c| c.get("custom"))
+                .and_then(|c| c.get("data"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let strict_echo = message_id.ends_with(".PNM")
+                && sender == external_id
+                && echoed == inner_b64;
+            return Ok(if strict_echo {
+                SendOutcome::Accepted(SendProof {
+                    request_id: mid.clone(),
+                    platform_message_id: Some(message_id.to_string()),
+                    buyer_id: buyer_id.to_string(),
+                    chat_id: Some(chat_id.to_string()),
+                    content_digest: content.text_digest.clone(),
+                })
+            } else {
+                SendOutcome::Unknown {
+                    hint: Some("200 响应缺少严格回显证据".into()),
+                }
+            });
+        }
+        // 408 及 5xx/超时类:可能已提交 → Unknown;其余 4xx:明确拒绝
+        if (400..=499).contains(&code) && code != 408 {
+            return Ok(SendOutcome::Rejected {
+                safe_code: format!("HTTP_{code}"),
+            });
+        }
+        Ok(SendOutcome::Unknown {
+            hint: Some(format!("code={code}")),
+        })
+    }
+
     // ---------- mtop 业务封装 ----------
 
     async fn order_detail(
@@ -306,7 +386,8 @@ fn order_of(kind: &MessageKind) -> Option<String> {
     match kind {
         MessageKind::PaidOrder { order_id, .. } => Some(order_id.clone()),
         MessageKind::OrderCompleted { order_id } => Some(order_id.clone()),
-        MessageKind::Other => None,
+        // 007 T045:聊天消息不绑定订单会话(§3 普通聊天不得转换业务事件)
+        MessageKind::ChatMessage { .. } | MessageKind::Other => None,
     }
 }
 
@@ -709,72 +790,46 @@ impl PlatformAdapter for XianyuAdapter {
                 .map(|b| b.chat_id.clone())
                 .unwrap_or_else(|| buyer_id.trim_end_matches("@goofish").to_string())
         };
-        let inner = json!({"contentType": 1, "text": {"text": content.text}});
-        let inner_b64 = base64::engine::general_purpose::STANDARD.encode(inner.to_string());
-        let my_id = format!("{}@goofish", session.external_id);
-        let body = json!([
-            {
-                "uuid": generate_msg_uuid(),
-                "cid": format!("{chat_id}@goofish"),
-                "conversationType": 1,
-                "content": {"contentType": 101, "custom": {"type": 1, "data": inner_b64}},
-                "redPointPolicy": 0,
-                "extension": {"extJson": "{}"},
-                "ctx": {"appVersion": "1.0", "platform": "web"},
-                "mtags": {},
-                "msgReadStatusSetting": 1,
-            },
-            {"actualReceivers": [format!("{}@goofish", buyer_id.trim_end_matches("@goofish")), my_id.clone()]}
-        ]);
-        let mid = real::generate_mid();
-        let mut headers = HashMap::new();
-        headers.insert("mid".to_string(), json!(mid.clone()));
-        let response = ws
-            .request("/r/MessageSend/sendByReceiverScope", headers, Some(body))
+        self.ws_chat_send(&session.external_id, ws, &chat_id, buyer_id, content)
             .await
-            .map_err(ws_rpc_to_platform)?;
-        let code = response.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
-        if code == 200 {
-            // 严格回显:裸 200 不构成接纳(§6)
-            let body = response.get("body").cloned().unwrap_or(Value::Null);
-            let message_id = body.get("messageId").and_then(|v| v.as_str()).unwrap_or("");
-            let sender = body
-                .get("extension")
-                .and_then(|e| e.get("senderUserId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let echoed = body
-                .get("content")
-                .and_then(|c| c.get("custom"))
-                .and_then(|c| c.get("data"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let strict_echo = message_id.ends_with(".PNM")
-                && sender == session.external_id
-                && echoed == inner_b64;
-            return Ok(if strict_echo {
-                SendOutcome::Accepted(SendProof {
-                    request_id: mid.clone(),
-                    platform_message_id: Some(message_id.to_string()),
-                    buyer_id: buyer_id.to_string(),
-                    chat_id: Some(chat_id),
-                    content_digest: content.text_digest.clone(),
-                })
-            } else {
-                SendOutcome::Unknown {
-                    hint: Some("200 响应缺少严格回显证据".into()),
-                }
-            });
+    }
+
+    /// 聊天消息发送(007 D6/T035):与 send_text 同一 sendByReceiverScope WS 通道
+    /// 与严格回显接纳判定;会话地址 peer.chat_id 优先,缺失按买家号兜底构造。
+    async fn send_chat_message(
+        &self,
+        ctx: &RequestContext,
+        peer: &ChatPeer,
+        kind: ChatSendKind,
+        content: &ContentForSend,
+    ) -> Result<SendOutcome, PlatformError> {
+        match kind {
+            // 图片消息协议(US4/T051 能力验证后开放;CapabilitySet.chat_send_image=false)
+            ChatSendKind::Image { .. } => {
+                return Err(PlatformError::Unsupported(
+                    "闲鱼图片消息发送未实装(US4/T051 验证后开放)".into(),
+                ));
+            }
+            ChatSendKind::Text => {}
         }
-        // 408 及 5xx/超时类:可能已提交 → Unknown;其余 4xx:明确拒绝
-        if (400..=499).contains(&code) && code != 408 {
-            return Ok(SendOutcome::Rejected {
-                safe_code: format!("HTTP_{code}"),
-            });
-        }
-        Ok(SendOutcome::Unknown {
-            hint: Some(format!("code={code}")),
-        })
+        let session = self.session(&ctx.account_id).await?;
+        let Some(ws) = self
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&ctx.account_id)
+            .and_then(|s| s.ws.clone())
+        else {
+            return Err(PlatformError::NetworkUnavailable);
+        };
+        // chat_id 优先;缺失以买家号构造(与 send_text 回退一致)
+        let chat_id = peer
+            .chat_id
+            .clone()
+            .unwrap_or_else(|| peer.buyer_id.trim_end_matches("@goofish").to_string());
+        self.ws_chat_send(&session.external_id, ws, &chat_id, &peer.buyer_id, content)
+            .await
     }
 
     async fn confirm_shipment(

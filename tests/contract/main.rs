@@ -5,6 +5,9 @@ mod support;
 
 mod accounts_http;
 mod cards_http;
+mod chat_http;
 mod dashboard_http;
 mod foundational_http;
+mod notify_http;
+mod rules_http;
 mod stats_http;

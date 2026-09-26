@@ -29,6 +29,8 @@ pub enum AuthError {
     SessionInvalid,
     #[error("CSRF 校验失败")]
     CsrfRejected,
+    #[error("凭据修改失败:当前密码错误或没有可变更项")]
+    CredentialChangeFailed,
     #[error(transparent)]
     Db(#[from] DbError),
     #[error(transparent)]
@@ -136,6 +138,62 @@ impl AdminAuth {
     pub async fn revoke_all(&self) -> Result<(), AuthError> {
         self.db
             .call(|conn| sessions::revoke_all_sessions(conn))
+            .await??;
+        Ok(())
+    }
+
+    /// 007 US7 修改管理员凭据(FR-072):argon2 验证当前密码(错 →
+    /// CredentialChangeFailed);新密码沿用既有强度校验(≥12);成功后
+    /// **撤销除 keep_session_token 外全部会话**(当前会话保留)。
+    /// new_username/new_password 为 None 或空串 = 不修改该项。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn change_credentials(
+        &self,
+        current_password: &str,
+        new_username: Option<&str>,
+        new_password: Option<&str>,
+        keep_session_token: &str,
+    ) -> Result<(), AuthError> {
+        let row = self.db.call(|conn| admin::find_admin(conn)).await??;
+        let Some(row) = row else {
+            return Err(AuthError::NotInitialized);
+        };
+        // 当前密码验证(统一凭据失败语义,不区分"未初始化/密码错")
+        let ok = verify_password(&row.password_hash, current_password).map_err(AuthError::Hash)?;
+        if !ok {
+            return Err(AuthError::CredentialChangeFailed);
+        }
+        // 新密码:空 = 不修改;非空走既有强度校验
+        let new_hash = match new_password.map(str::trim).filter(|p| !p.is_empty()) {
+            None => None,
+            Some(p) => {
+                if p.chars().count() < MIN_PASSWORD_CHARS {
+                    return Err(AuthError::PasswordTooShort);
+                }
+                Some(hash_password(p).map_err(AuthError::Hash)?)
+            }
+        };
+        // 新用户名:空/与现值相同 = 不修改;UNIQUE 冲突防御映射凭据失败
+        let new_name = new_username
+            .map(str::trim)
+            .filter(|u| !u.is_empty() && *u != row.username)
+            .map(str::to_string);
+        if new_hash.is_none() && new_name.is_none() {
+            return Err(AuthError::CredentialChangeFailed);
+        }
+        let keep_hash = hash_hex(keep_session_token.as_bytes());
+        let admin_id = row.id;
+        self.db
+            .call(move |conn| -> rusqlite::Result<()> {
+                admin::update_credentials(
+                    conn,
+                    &admin_id,
+                    new_name.as_deref(),
+                    new_hash.as_deref(),
+                )?;
+                sessions::revoke_all_except(conn, &keep_hash)?;
+                Ok(())
+            })
             .await??;
         Ok(())
     }
@@ -272,6 +330,64 @@ mod tests {
         assert!(matches!(
             auth.validate(&ok.cookie_token, Some(&ok.csrf_token)).await,
             Err(AuthError::SessionInvalid)
+        ));
+    }
+
+    #[tokio::test]
+    async fn change_credentials_keeps_only_current_session() {
+        let (_dir, auth) = setup().await;
+        auth.initialize("a-long-password-123", "a-long-password-123")
+            .await
+            .unwrap();
+        let current = auth.login("a-long-password-123").await.unwrap();
+        let other = auth.login("a-long-password-123").await.unwrap();
+
+        // 当前密码错误 → CredentialChangeFailed,两会话不受影响
+        assert!(matches!(
+            auth.change_credentials(
+                "wrong-current-password",
+                Some("admin"),
+                Some("b-long-password-456"),
+                &current.cookie_token,
+            )
+            .await,
+            Err(AuthError::CredentialChangeFailed)
+        ));
+        assert!(auth.validate(&other.cookie_token, None).await.is_ok());
+
+        // 新密码过短 → 既有强度校验
+        assert!(matches!(
+            auth.change_credentials(
+                "a-long-password-123",
+                None,
+                Some("short"),
+                &current.cookie_token,
+            )
+            .await,
+            Err(AuthError::PasswordTooShort)
+        ));
+
+        // 成功:当前会话保留、其他会话全部失效、新密码可登录
+        auth.change_credentials(
+            "a-long-password-123",
+            Some("boss"),
+            Some("b-long-password-456"),
+            &current.cookie_token,
+        )
+        .await
+        .unwrap();
+        assert!(auth.validate(&current.cookie_token, None).await.is_ok());
+        assert!(matches!(
+            auth.validate(&other.cookie_token, None).await,
+            Err(AuthError::SessionInvalid)
+        ));
+        let relogin = auth.login("b-long-password-456").await.unwrap();
+        let identity = auth.validate(&relogin.cookie_token, Some(&relogin.csrf_token)).await.unwrap();
+        assert_eq!(identity.admin_id, current.admin_id);
+        // 用户名已更新且旧密码失效
+        assert!(matches!(
+            auth.login("a-long-password-123").await,
+            Err(AuthError::InvalidCredentials)
         ));
     }
 }

@@ -77,7 +77,13 @@ export function applyContentStateFilter(rows: OrderRow[], contentState: string):
   return rows.filter((r) => r.deliveryState === contentState);
 }
 
-export type ManualAction = "resend" | "mark_received" | "terminate" | "takeover";
+export type ManualAction =
+  | "resend"
+  | "mark_received"
+  | "terminate"
+  | "takeover"
+  | "trigger_delivery"
+  | "confirm_shipment";
 
 /** 人工动作提交体(T064/FR-022):补发携带重复风险确认,
  *  接管携带历史范围确认(服务端 manual_api 强制校验,缺失即拒);
@@ -123,5 +129,97 @@ export function actionAvailability(action: ManualAction, deliveryState: string |
       return deliveryState === "terminated"
         ? { enabled: false, reason: "交付已终止" }
         : { enabled: true, reason: "" };
+    // 人工触发交付(US6/FR-061):内容未 accepted 且未终止时可发起;
+    // 付款事实缺失由服务端 422 拒绝,缺失要素呈现于确认流错误行。
+    case "trigger_delivery":
+      if (deliveryState === "delivered") {
+        return { enabled: false, reason: "内容已交付(accepted),无需人工触发" };
+      }
+      if (deliveryState === "terminated") {
+        return { enabled: false, reason: "交付已终止" };
+      }
+      return { enabled: true, reason: "" };
+    // 确认平台已发货(US6/FR-062):确认轴独立更新,前提内容交付 accepted。
+    case "confirm_shipment":
+      return deliveryState === "delivered"
+        ? { enabled: true, reason: "" }
+        : { enabled: false, reason: "需内容交付 accepted" };
   }
+}
+
+// ---------- US6/T071:订单同步结果派生(纯函数,便于测试) ----------
+
+/** 单笔同步 HandleOutcome(contracts §6)→ 中文呈现。 */
+export const SINGLE_SYNC_OUTCOME_LABELS: Record<string, string> = {
+  delivered: "已交付",
+  ineligible: "不合格",
+  not_sent: "未发送",
+  unknown: "结果未知",
+  already_handled: "已处理过",
+  busy: "忙"
+};
+
+export function singleSyncOutcomeLabel(outcome: string): string {
+  return SINGLE_SYNC_OUTCOME_LABELS[outcome] ?? outcome;
+}
+
+/** 一键同步逐账号报告(T068 实现):离线账号仅携带 offline 标注。 */
+export interface SyncAccountReport {
+  accountId: string;
+  offline: boolean;
+  ordersSeen: number;
+  created: number;
+  restored: number;
+  reassigned: number;
+  ineligible: number;
+  failed: Array<{ orderId: string | null; reason: string }>;
+}
+
+/** 解析任务终态 result_ref(JSON 文本 {"accounts":[…]});缺失/非 JSON 安全回退空。 */
+export function parseSyncReports(resultRef: string | null | undefined): SyncAccountReport[] {
+  if (typeof resultRef !== "string" || resultRef === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(resultRef);
+  } catch {
+    return [];
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed["accounts"])) return [];
+  const out: SyncAccountReport[] = [];
+  for (const a of parsed["accounts"]) {
+    if (!isRecord(a)) continue;
+    const num = (key: string): number => (typeof a[key] === "number" ? (a[key] as number) : 0);
+    out.push({
+      accountId: String(a["account_id"] ?? ""),
+      offline: a["offline"] === true,
+      ordersSeen: num("orders_seen"),
+      created: num("created"),
+      restored: num("restored"),
+      reassigned: num("reassigned"),
+      ineligible: num("ineligible"),
+      failed: (Array.isArray(a["failed"]) ? a["failed"] : []).flatMap((f) => {
+        if (!isRecord(f)) return [];
+        return [
+          {
+            orderId:
+              f["order_id"] === null || f["order_id"] === undefined ? null : String(f["order_id"]),
+            reason: String(f["reason"] ?? "")
+          }
+        ];
+      })
+    });
+  }
+  return out;
+}
+
+/** 逐账号摘要行:"账号:新建 X · 恢复 Y · 修正 Z · 不合格 N · 失败 M";离线跳过标注。 */
+export function syncReportLine(r: SyncAccountReport, accountLabel = r.accountId): string {
+  if (r.offline) return `${accountLabel}:离线跳过(未对账)`;
+  return `${accountLabel}:新建 ${r.created} · 恢复 ${r.restored} · 修正 ${r.reassigned} · 不合格 ${r.ineligible} · 失败 ${r.failed.length}`;
+}
+
+/** 失败明细(悬浮 title):逐条"订单号:原因"。 */
+export function syncFailedDetail(r: SyncAccountReport): string {
+  if (r.failed.length === 0) return "";
+  return r.failed.map((f) => `${f.orderId ?? "未知订单"}:${f.reason}`).join("\n");
 }

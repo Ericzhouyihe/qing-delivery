@@ -197,3 +197,72 @@ pub async fn order_detail(
     }))
     .into_response()
 }
+
+// ---------- 007 US6:订单同步端点(contracts §6,T070) ----------
+
+#[derive(Deserialize)]
+pub struct SyncStartBody {
+    pub account_ids: Option<Vec<String>>,
+    pub window_days: Option<i64>,
+}
+
+/// 一键同步:创建 order_sync 后台任务,立即返回 202 + 任务句柄。
+pub async fn start_order_sync(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Json(body): Json<SyncStartBody>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, true).await {
+        return e.into_response();
+    }
+    let Some(sync) = state.inner.order_sync.as_ref() else {
+        return err_shared(ErrorCode::ServiceStopping, "同步服务不可用(运行时未接入)");
+    };
+    let window = body.window_days.unwrap_or(crate::application::orders_sync::DEFAULT_WINDOW_DAYS);
+    if !(1..=92).contains(&window) {
+        return err_shared(ErrorCode::InvalidRequest, "window_days 必须在 1—92 天");
+    }
+    match sync.start(body.account_ids.unwrap_or_default(), window).await {
+        Ok(job) => (
+            axum::http::StatusCode::ACCEPTED,
+            Json(json!({
+                "operation_id": crate::domain::ids::new_id("op"),
+                "job": {
+                    "id": job.id, "kind": job.kind, "state": job.state, "version": job.version,
+                    "created_at": crate::domain::time_util::format_rfc3339(job.created_at),
+                    "updated_at": crate::domain::time_util::format_rfc3339(job.updated_at),
+                    "target_id": job.target_id,
+                }
+            })),
+        )
+            .into_response(),
+        Err(_) => err_shared(ErrorCode::PersistenceUnavailable, "同步任务创建失败"),
+    }
+}
+
+/// 单笔同步:直接走既有交付管线,同步返回结果摘要。
+pub async fn sync_single_order(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Path((account_id, order_id)): Path<(String, String)>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, true).await {
+        return e.into_response();
+    }
+    let Some(sync) = state.inner.order_sync.as_ref() else {
+        return err_shared(ErrorCode::ServiceStopping, "同步服务不可用(运行时未接入)");
+    };
+    use crate::application::orders_sync::SingleSyncOutcome as S;
+    match sync.sync_single(&account_id, &order_id).await {
+        Ok(out) => Json(json!({ "outcome": match out {
+            S::Delivered { .. } => "delivered",
+            S::Ineligible { .. } => "ineligible",
+            S::NotSent { .. } => "not_sent",
+            S::Unknown { .. } => "unknown",
+            S::AlreadyHandled => "already_handled",
+            S::Busy => "busy",
+        }}))
+        .into_response(),
+        Err(e) => err_shared(ErrorCode::AccountUnavailable, &e.to_string()),
+    }
+}

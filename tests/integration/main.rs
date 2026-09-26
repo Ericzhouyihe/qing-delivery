@@ -5,7 +5,14 @@ mod support;
 
 mod cards;
 mod catalog_rules;
+mod chat;
 mod delivery_core;
+mod notify;
+mod orders_sync;
 mod query_backup;
 mod recovery_manual;
+mod replies;
+mod rules_ext;
+mod settings_ai;
+mod templates;
 mod ws_lifecycle;

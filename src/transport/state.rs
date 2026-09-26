@@ -157,6 +157,10 @@ pub struct AppStateInner {
     /// 003 安全验证处置服务;None(无浏览器/mock)时端点如实报不支持
     pub verification:
         Option<std::sync::Arc<crate::application::verification::service::VerificationService>>,
+    /// 007 US4 聊天用例(带平台发送端口;live=闲鱼,mock/测试=假适配器)
+    pub chat: Option<std::sync::Arc<dyn crate::application::chat::ChatOps>>,
+    /// 007 US6 一键订单同步与单笔同步用例(live=闲鱼,mock=假适配器)
+    pub order_sync: Option<std::sync::Arc<dyn crate::application::orders_sync::OrderSyncOps>>,
     pub anonymous_csrf: AnonymousCsrf,
     pub login_limiter: LoginLimiter,
     pub stopping: AtomicBool,
@@ -185,6 +189,8 @@ impl AppState {
         verification: Option<
             std::sync::Arc<crate::application::verification::service::VerificationService>,
         >,
+        chat: Option<std::sync::Arc<dyn crate::application::chat::ChatOps>>,
+        order_sync: Option<std::sync::Arc<dyn crate::application::orders_sync::OrderSyncOps>>,
         config: ServeConfig,
         key: DataKey,
     ) -> Self {
@@ -200,6 +206,8 @@ impl AppState {
                 authorization,
                 item_sync,
                 verification,
+                order_sync,
+                chat,
                 db,
                 config,
                 key,

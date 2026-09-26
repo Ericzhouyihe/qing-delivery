@@ -116,6 +116,23 @@ const ACTION_LABELS: Record<string, { label: string; endpoint: string; danger: b
     riskRequired: false,
     riskText: "",
     impact: "以人工结论标记平台确认完成。"
+  },
+  // 007 US6(T070/T071):issues allowed_actions 可含 trigger_delivery;标签/端点与订单页一致
+  trigger_delivery: {
+    label: "人工触发交付",
+    endpoint: "deliveries",
+    danger: false,
+    riskRequired: false,
+    riskText: "",
+    impact: "按既有规则匹配并发送给买家;付款事实缺失会被拒绝。"
+  },
+  confirm_shipment: {
+    label: "确认平台已发货",
+    endpoint: "confirm-shipments",
+    danger: false,
+    riskRequired: false,
+    riskText: "",
+    impact: "独立确认平台发货状态,不影响消息交付记录。"
   }
 };
 

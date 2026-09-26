@@ -81,6 +81,15 @@ pub fn revoke_all_sessions(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// 007 US7 改密语义:撤销除指定会话外的全部会话(FR-072,当前会话保留)。
+pub fn revoke_all_except(conn: &Connection, keep_token_hash: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE sessions SET revoked_at = ?1 WHERE revoked_at IS NULL AND token_hash != ?2",
+        params![utc_now_ms(), keep_token_hash],
+    )?;
+    Ok(())
+}
+
 pub fn purge_expired(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM sessions WHERE expires_at <= ?1",

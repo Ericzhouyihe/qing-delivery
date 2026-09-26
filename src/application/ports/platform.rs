@@ -112,6 +112,20 @@ pub enum PlatformEvent {
         meta: EventMeta,
         reason: String,
     },
+    /// 买家聊天消息(007 D5/T045):仅买家方向(direction="2"语义)产生;
+    /// 进入聊天域(ChatService::ingest),绝不触发订单/交付(§3)。
+    /// 系统/交易卡片消息仍走既有系统事件路径。
+    ChatMessageReceived {
+        meta: EventMeta,
+        chat_id: Option<String>,
+        buyer_id: Option<String>,
+        /// 平台消息 ID(入站去重键);适配器缺失时以稳定内容摘要兜底
+        message_id: String,
+        msg_kind: crate::domain::chat::ChatMsgKind,
+        text: Option<String>,
+        image_url: Option<String>,
+        item_id: Option<String>,
+    },
 }
 
 // ---------- 发送与确认结果(§6、§8) ----------
@@ -149,6 +163,49 @@ pub enum ConfirmOutcome {
 }
 
 // ---------- 商品/订单数据 ----------
+
+/// 聊天发送对端(007 D6):买家号必有;会话地址缺失时适配器按买家号兜底构造。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatPeer {
+    pub buyer_id: String,
+    /// goofish 会话地址;None → 适配器以 buyer_id 兜底(与 send_text 回退一致)
+    pub chat_id: Option<String>,
+}
+
+/// 聊天消息种类:Text 即时可用;Image 由 US4(T051)实装并按能力门禁开放。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatSendKind {
+    Text,
+    /// 图片消息:URL 随变体携带(ContentForSend 摘要仍覆盖全文)。
+    /// TODO(US4/T051):上传文件存储与 chat_send_image 能力门禁后启用。
+    Image { url: String },
+}
+
+/// 适配器能力声明(007 D6/T047):transport capabilities 端点输出,
+/// 前端按此门禁图片入口与历史说明(FR-042)。US3 落 chat_send_image /
+/// chat_history_backfill 两项:live(闲鱼)未验证 → false;mock 如实 → true。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapabilitySet {
+    /// 是否支持发送图片消息(否 → 前端隐藏图片入口,适配器 Image 返回 Unsupported)
+    pub chat_send_image: bool,
+    /// 是否支持历史会话回填(否 → 仅展示接入后收到的会话)
+    pub chat_history_backfill: bool,
+}
+
+impl CapabilitySet {
+    /// live/闲鱼:图片发送与历史回填均未验证,如实声明 false(T051 前不开放)。
+    pub const LIVE: CapabilitySet = CapabilitySet {
+        chat_send_image: false,
+        chat_history_backfill: false,
+    };
+
+    /// mock:两项均实现,供开发/测试验证前端能力门禁路径。
+    pub const MOCK: CapabilitySet = CapabilitySet {
+        chat_send_image: true,
+        chat_history_backfill: true,
+    };
+}
+
 
 #[derive(Clone, Debug)]
 pub struct ProductPage {
@@ -225,6 +282,23 @@ pub trait PlatformAdapter: Send + Sync {
         buyer_id: &str,
         content: &ContentForSend,
     ) -> impl std::future::Future<Output = Result<SendOutcome, PlatformError>> + Send;
+
+    /// 聊天消息提交(007 D6):与 send_text 共用发送可靠性语义
+    /// (SendOutcome 四分类、严格回显接纳),但不绑定订单/交付状态;
+    /// 关键词/AI/默认回复与求评计划经此端口发送。
+    /// 默认实现 = 未声明能力(PlatformError::Unsupported),新增实现零破坏。
+    fn send_chat_message(
+        &self,
+        ctx: &RequestContext,
+        peer: &ChatPeer,
+        kind: ChatSendKind,
+        content: &ContentForSend,
+    ) -> impl std::future::Future<Output = Result<SendOutcome, PlatformError>> + Send {
+        let _ = (ctx, peer, kind, content);
+        std::future::ready(Err(PlatformError::Unsupported(
+            "send_chat_message 未实现(该适配器未声明聊天发送能力)".into(),
+        )))
+    }
 
     /// 独立平台发货确认:只接受应用授予的资格与原交付证明。
     fn confirm_shipment(

@@ -249,7 +249,7 @@ export const overviewPage: PageFactory = (root) => {
     refreshHint,
     el("span", { class: "ov-toolbar-spacer" }),
     el("a", { class: "btn btn-primary btn-sm", href: "/accounts" }, "＋ 扫码接入账号"),
-    el("a", { class: "btn btn-secondary btn-sm", href: "/catalog" }, "⟳ 同步商品"),
+    el("a", { class: "btn btn-secondary btn-sm", href: "/items" }, "⟳ 同步商品"),
     el("a", { class: "btn btn-secondary btn-sm", href: "/orders" }, "⇄ 打开订单中心")
   );
 

@@ -1,0 +1,1 @@
+export { notificationsPage } from "./page";

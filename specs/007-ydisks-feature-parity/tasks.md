@@ -83,18 +83,18 @@ description: "Task list for 007-ydisks-feature-parity"
 
 ### Tests for User Story 2
 
-- [ ] T020 [P] [US2] 先写单测(预期失败):src/domain/templates.rs 占位符解析/校验(`{{cards.key}}`/`{{custom.key}}`/系统变量;命名限 `[A-Za-z0-9_-]`;未知变量报错定位)
-- [ ] T021 [P] [US2] 先写集成测试(预期失败):模板多消息顺序发送、每条消息独立 proof、中断后续发不重发已确认条、被引用删除 409
+- [X] T020 [P] [US2] 先写单测(预期失败):src/domain/templates.rs 占位符解析/校验(`{{cards.key}}`/`{{custom.key}}`/系统变量;命名限 `[A-Za-z0-9_-]`;未知变量报错定位)
+- [X] T021 [P] [US2] 先写集成测试(预期失败):模板多消息顺序发送、每条消息独立 proof、中断后续发不重发已确认条、被引用删除 409
 
 ### Implementation for User Story 2
 
-- [ ] T022 [US2] 实现 src/domain/templates.rs(T020 转绿)
-- [ ] T023 [US2] 实现 src/adapters/sqlite/repos/templates.rs 与 src/application/templates/mod.rs:CRUD(消息 ≤10 条、单条 ≤1000 unicode 标量)、used_by 引用计数(rules+rule_variants+template_bindings 扫描)、渲染函数(订单事实 + 绑定卡密内容 + custom 取值;预览与发送共用)
-- [ ] T024 [US2] 扩展 delivery(research D4):freeze_snapshot template 分支(快照存渲染后消息数组,source_content_id=`template:{id}`);dispatch 逐条顺序发送、每条 Accepted 各 insert 一行 delivery_proofs(同 attempt 多行)、按 content_digest 判定续发起点
-- [ ] T025 [US2] 实现 src/transport/templates_api.rs(contracts §2)+ 扩展 rules/preview 返回 `rendered_messages[]`(卡密内容以 `[卡密内容 ×N]` 掩码)
-- [ ] T026 [P] [US2] frontend/src/features/templates/(page.ts/model.ts/编辑器含变量指南与示例块)+ router `/templates` + components.css 分节
-- [ ] T027 [P] [US2] frontend/src/features/templates/model.test.ts(占位符校验/keys 提取)
-- [ ] T028 [US2] 按 quickstart.md"US2 发货模板"1–6 步走查
+- [X] T022 [US2] 实现 src/domain/templates.rs(T020 转绿)
+- [X] T023 [US2] 实现 src/adapters/sqlite/repos/templates.rs 与 src/application/templates/mod.rs:CRUD(消息 ≤10 条、单条 ≤1000 unicode 标量)、used_by 引用计数(rules+rule_variants+template_bindings 扫描)、渲染函数(订单事实 + 绑定卡密内容 + custom 取值;预览与发送共用)
+- [X] T024 [US2] 扩展 delivery(research D4):freeze_snapshot template 分支(快照存渲染后消息数组,source_content_id=`template:{id}`);dispatch 逐条顺序发送、每条 Accepted 各 insert 一行 delivery_proofs(同 attempt 多行)、按 content_digest 判定续发起点
+- [X] T025 [US2] 实现 src/transport/templates_api.rs(contracts §2)+ 扩展 rules/preview 返回 `rendered_messages[]`(卡密内容以 `[卡密内容 ×N]` 掩码)
+- [X] T026 [P] [US2] frontend/src/features/templates/(page.ts/model.ts/编辑器含变量指南与示例块)+ router `/templates` + components.css 分节
+- [X] T027 [P] [US2] frontend/src/features/templates/model.test.ts(占位符校验/keys 提取)
+- [X] T028 [US2] 按 quickstart.md"US2 发货模板"1–6 步走查(UI 实证:页面/空态/新建两消息模板含变量/卡片变量行/指南六 token+示例/非法占位符"第 2 条第 5 字符"定位拦截+保存禁用;步骤 3–5 多消息逐条 proof/续发不重发/409 引用保护由 7 个集成测试覆盖,规则绑模板 UI 待 US3 T040 后复验;mock 档 127.0.0.1:59190)
 
 **Checkpoint**: US1+US2 独立可验收;模板渲染预览=实际发送
 
@@ -108,23 +108,23 @@ description: "Task list for 007-ydisks-feature-parity"
 
 ### Tests for User Story 3
 
-- [ ] T029 [P] [US3] 先写单测(预期失败):src/domain/rules_ext.rs 变体匹配(变体 (spec_name→value) 对 ⊆ 订单 sku_pairs)、优先级选取、同优先级冲突判定
-- [ ] T030 [P] [US3] 先写集成测试(预期失败):同范围同触发两条启用规则仅执行 priority 最小一条;账号级未确认(all_items_confirmed=0)不执行且标"需确认·暂不发货";关键词回复发送消息但订单/交付状态零变化
+- [X] T029 [P] [US3] 先写单测(预期失败):src/domain/rules_ext.rs 变体匹配(变体 (spec_name→value) 对 ⊆ 订单 sku_pairs)、优先级选取、同优先级冲突判定
+- [X] T030 [P] [US3] 先写集成测试(预期失败):同范围同触发两条启用规则仅执行 priority 最小一条;账号级未确认(all_items_confirmed=0)不执行且标"需确认·暂不发货";关键词回复发送消息但订单/交付状态零变化
 
 ### Implementation for User Story 3
 
-- [ ] T031 [US3] 实现 src/domain/rules_ext.rs(T029 转绿)
-- [ ] T032 [US3] 实现 src/adapters/sqlite/repos/rules_ext.rs:变体/关键词(reply_rules+reply_rule_items)/默认回复(default_replies+default_reply_log)/求评状态(review_reminder_state)仓储;rules 查询扩展(trigger_type/enabled/search 过滤、priority 升序)
-- [ ] T033 [US3] 改造 src/application/catalog/rules.rs:RuleDraft 扩展(trigger_type/variants/来源绑定/review_config/priority)、同范围同触发同优先级冲突→422 rule_conflict、账号级必须 all_items_confirmed、引用缺失→needs_reconfiguration 置位并旁路执行、修复后清除
-- [ ] T034 [US3] 扩展 src/application/delivery/eligibility.rs + service.rs 规则命中:同范围同触发 priority 升序取第一条(仅最高执行)、变体命中、item 规则优先于账号级(item_id='')回退
-- [ ] T035 [US3] 端口扩展(research D6 文本部分):src/application/ports/platform.rs 新增 `send_chat_message(ctx, ChatPeer{buyer_id, chat_id: Option}, kind: ChatSendKind, content)`(default 实现=UnsupportedCapability);src/adapters/xianyu/adapter.rs 复用 sendByReceiverScope 实现(chat_id 优先/buyer_id 兜底);mock 适配器实现
-- [ ] T036 [US3] 实现 src/application/replies/mod.rs 分流编排(research D7):买家文本消息 → 关键词(商品级优先→账号级,包含匹配忽略大小写)→ AI 占位 hook(US7 实装)→ 默认回复(reply_once 查 default_reply_log);任一环节失败顺延;全部经 send_chat_message,**不写订单/交付状态**;发送结果留痕
-- [ ] T037 [US3] 求评计划:src/runtime/supervisor.rs 每小时定时器 + src/application/replies/ 求评扫描(review_config:wait_hours/interval_hours/max_count/text;账号停用/离线跳过留痕;达上限停止)
-- [ ] T038 [US3] issues 扩展:自动化失败新 kind 与 allowed_actions 语义映射(continue→确认继续/retry→安全重试/cancel→终止,复用既有 manual 动作);src/application/delivery/service.rs 失败路径携带
-- [ ] T039 [US3] transport:rules API 扩展(contracts §3:RuleDto 新字段/trigger_counts/保存约束)+ reply-rules 与 default-reply 端点
-- [ ] T040 [P] [US3] frontend:features/catalog/rule-editor.ts 表单主体提取为 `renderRuleForm`(match-preview 零改动)+ 新建 features/rules/(三页签:交易自动化/关键词回复/默认回复)+ 新建 features/items/(自 catalog 拆出商品列表,保留"关联发货规则"跨页跳转 `?account=&item=`)+ app/router.ts:`/catalog` 移除,`/items` `/rules` 注册
-- [ ] T041 [P] [US3] frontend/src/features/rules/model.test.ts + match-preview 回归测试
-- [ ] T042 [US3] 按 quickstart.md"US3 自动化规则扩展"1–8 步走查
+- [X] T031 [US3] 实现 src/domain/rules_ext.rs(T029 转绿)
+- [X] T032 [US3] 实现 src/adapters/sqlite/repos/rules_ext.rs:变体/关键词(reply_rules+reply_rule_items)/默认回复(default_replies+default_reply_log)/求评状态(review_reminder_state)仓储;rules 查询扩展(trigger_type/enabled/search 过滤、priority 升序)
+- [X] T033 [US3] 改造 src/application/catalog/rules.rs:RuleDraft 扩展(trigger_type/variants/来源绑定/review_config/priority)、同范围同触发同优先级冲突→422 rule_conflict、账号级必须 all_items_confirmed、引用缺失→needs_reconfiguration 置位并旁路执行、修复后清除
+- [X] T034 [US3] 扩展 src/application/delivery/eligibility.rs + service.rs 规则命中:同范围同触发 priority 升序取第一条(仅最高执行)、变体命中、item 规则优先于账号级(item_id='')回退
+- [X] T035 [US3] 端口扩展(research D6 文本部分):src/application/ports/platform.rs 新增 `send_chat_message(ctx, ChatPeer{buyer_id, chat_id: Option}, kind: ChatSendKind, content)`(default 实现=UnsupportedCapability);src/adapters/xianyu/adapter.rs 复用 sendByReceiverScope 实现(chat_id 优先/buyer_id 兜底);mock 适配器实现
+- [X] T036 [US3] 实现 src/application/replies/mod.rs 分流编排(research D7):买家文本消息 → 关键词(商品级优先→账号级,包含匹配忽略大小写)→ AI 占位 hook(US7 实装)→ 默认回复(reply_once 查 default_reply_log);任一环节失败顺延;全部经 send_chat_message,**不写订单/交付状态**;发送结果留痕
+- [X] T037 [US3] 求评计划:src/runtime/supervisor.rs 每小时定时器 + src/application/replies/ 求评扫描(review_config:wait_hours/interval_hours/max_count/text;账号停用/离线跳过留痕;达上限停止)
+- [X] T038 [US3] issues 扩展:自动化失败新 kind 与 allowed_actions 语义映射(continue→确认继续/retry→安全重试/cancel→终止,复用既有 manual 动作);src/application/delivery/service.rs 失败路径携带
+- [X] T039 [US3] transport:rules API 扩展(contracts §3:RuleDto 新字段/trigger_counts/保存约束)+ reply-rules 与 default-reply 端点
+- [X] T040 [P] [US3] frontend:features/catalog/rule-editor.ts 表单主体提取为 `renderRuleForm`(match-preview 零改动)+ 新建 features/rules/(三页签:交易自动化/关键词回复/默认回复)+ 新建 features/items/(自 catalog 拆出商品列表,保留"关联发货规则"跨页跳转 `?account=&item=`)+ app/router.ts:`/catalog` 移除,`/items` `/rules` 注册
+- [X] T041 [P] [US3] frontend/src/features/rules/model.test.ts + match-preview 回归测试
+- [X] T042 [US3] 按 quickstart.md"US3 自动化规则扩展"1–8 步走查(UI 实证:/rules 三页签+账号选择器+筛选;编辑器含触发类型[评价赠品按能力门禁隐藏+说明]/优先级/账号级确认警示/内容来源三选一/变体区/匹配预演;账号级规则绑定卡组创建成功,卡显示动作摘要与删除按钮[DELETE 端点本轮补齐:乐观锁/跨账号 NotFound/被交付引用 409,集成测试 rule_delete_guards];步骤 1-5/8 由 31 项集成测试覆盖[变体取卡/优先级唯一执行/未确认不执行/关键词零订单写入],补偿自动触发待 mock 值守在线语义后续复验;127.0.0.1:59190)
 
 **Checkpoint**: US1~US3 独立可验收;内容链(卡密/模板/规则)完整
 
@@ -138,22 +138,22 @@ description: "Task list for 007-ydisks-feature-parity"
 
 ### Tests for User Story 4
 
-- [ ] T043 [P] [US4] 先写单测(预期失败):src/domain/chat.rs 出站状态机(sending→sent|failed|uncertain;uncertain 不可自动重试)与未读聚合
-- [ ] T044 [P] [US4] 先写集成测试(预期失败):同一条 WS 消息经事件管道与聊天摄取不重复落库;未知结果不开重试;快捷回复第 51 条 422 reply_limit_reached
+- [X] T043 [P] [US4] 先写单测(预期失败):src/domain/chat.rs 出站状态机(sending→sent|failed|uncertain;uncertain 不可自动重试)与未读聚合
+- [X] T044 [P] [US4] 先写集成测试(预期失败):同一条 WS 消息经事件管道与聊天摄取不重复落库;未知结果不开重试;快捷回复第 51 条 422 reply_limit_reached
 
 ### Implementation for User Story 4
 
-- [ ] T045 [US4] 适配器事件(research D5):src/adapters/xianyu/events.rs 新增 `MessageKind::ChatMessage{chat_id,buyer_id,message_id,kind,text,image_url,item_id}`(普通买家消息不再丢弃)+ `PlatformEvent::ChatMessageReceived`;同步 events.rs `meta_of/fields_of` 与 supervisor.rs `dispatch_loop` 穷尽 match → ChatService::ingest
-- [ ] T046 [P] [US4] migrations/0005_chat.sql(data-model 增量 2:conversations/chat_messages/quick_replies/buyer_notes,含唯一与部分索引)+ migrations.rs 追加 + `EXPECTED_TABLE_COUNT` 更新
-- [ ] T047 [P] [US4] capabilities 扩展:src/application/ports/platform.rs CapabilitySet 增 `chat_send_image`/`chat_history_backfill`(live 适配器如实声明,mock 实现)+ transport capabilities DTO + frontend parse
-- [ ] T048 [US4] 实现 src/domain/chat.rs(T043 转绿)
-- [ ] T049 [US4] 实现 src/adapters/sqlite/repos/chat.rs(会话 upsert/消息分页/未读/隐藏清理/快捷回复/买家备注)
-- [ ] T050 [US4] 实现 src/application/chat/mod.rs:ingest(去重、未读++、触发 replies 分流)、发送(同步等待 ≤15s,SendOutcome→四状态)、retry(仅 failed)、read 清零、删除会话(本机隐藏+清展示消息,确认流)、`OutgoingMessageEvidence` 回填 platform_message_id
-- [ ] T051 [US4] 图片发送(能力门禁):ChatSendKind::Image 适配器实现、上传文件存数据目录 uploads/(≤10MB,413 payload_too_large)、`chat_send_image=false` 时端点 403 unsupported_capability
-- [ ] T052 [US4] 实现 src/transport/chat_api.rs(contracts §4 全部端点)
-- [ ] T053 [US4] frontend/src/features/chat/(三栏布局/账号 Tab+在线点/会话搜索+只看未读/消息面板+加载更早/输入区回车发送/粘贴图片预览/快捷回复抽屉/买家备注弹窗/四状态渲染)+ router `/chat` + shell 徽标(app/store.ts 增 chatUnread 通道,ShellNav.badge 接线)
-- [ ] T054 [P] [US4] frontend/src/features/chat/model.test.ts
-- [ ] T055 [US4] 按 quickstart.md"US4 在线聊天"1–7 步走查,**并记录 3s 轮询空闲开销测量**(宪章 III:可见时 ≤3s、页面不可见暂停)
+- [X] T045 [US4] 适配器事件(research D5):src/adapters/xianyu/events.rs 新增 `MessageKind::ChatMessage{chat_id,buyer_id,message_id,kind,text,image_url,item_id}`(普通买家消息不再丢弃)+ `PlatformEvent::ChatMessageReceived`;同步 events.rs `meta_of/fields_of` 与 supervisor.rs `dispatch_loop` 穷尽 match → ChatService::ingest
+- [X] T046 [P] [US4] migrations/0005_chat.sql(data-model 增量 2:conversations/chat_messages/quick_replies/buyer_notes,含唯一与部分索引)+ migrations.rs 追加 + `EXPECTED_TABLE_COUNT` 更新
+- [X] T047 [P] [US4] capabilities 扩展:src/application/ports/platform.rs CapabilitySet 增 `chat_send_image`/`chat_history_backfill`(live 适配器如实声明,mock 实现)+ transport capabilities DTO + frontend parse
+- [X] T048 [US4] 实现 src/domain/chat.rs(T043 转绿)
+- [X] T049 [US4] 实现 src/adapters/sqlite/repos/chat.rs(会话 upsert/消息分页/未读/隐藏清理/快捷回复/买家备注)
+- [X] T050 [US4] 实现 src/application/chat/mod.rs:ingest(去重、未读++、触发 replies 分流)、发送(同步等待 ≤15s,SendOutcome→四状态)、retry(仅 failed)、read 清零、删除会话(本机隐藏+清展示消息,确认流)、`OutgoingMessageEvidence` 回填 platform_message_id
+- [X] T051 [US4] 图片发送(能力门禁):ChatSendKind::Image 适配器实现、上传文件存数据目录 uploads/(≤10MB,413 payload_too_large)、`chat_send_image=false` 时端点 403 unsupported_capability
+- [X] T052 [US4] 实现 src/transport/chat_api.rs(contracts §4 全部端点)
+- [X] T053 [US4] frontend/src/features/chat/(三栏布局/账号 Tab+在线点/会话搜索+只看未读/消息面板+加载更早/输入区回车发送/粘贴图片预览/快捷回复抽屉/买家备注弹窗/四状态渲染)+ router `/chat` + shell 徽标(app/store.ts 增 chatUnread 通道,ShellNav.badge 接线)
+- [X] T054 [P] [US4] frontend/src/features/chat/model.test.ts
+- [X] T055 [US4] 走查+测量(三栏/账号 Tab 未读/会话列表/徽标 1→打开清零/离线输入禁用+原因/快捷回复 1/50;发送四状态由 11 项集成测试覆盖;3s 轮询测量:45s 空闲 CPU 0.00s、WorkingSet 20.1→20.3MB;poll 内建可见性门控)
 
 **Checkpoint**: US1~US4 独立可验收;聊天与交付共用发送可靠性语义
 
@@ -167,20 +167,20 @@ description: "Task list for 007-ydisks-feature-parity"
 
 ### Tests for User Story 5
 
-- [ ] T056 [P] [US5] 先写单测(预期失败):dingtalk 加签与 feishu 签名算法(HMAC-SHA256,chrono 时间戳)、event_types 订阅过滤(空=全部)
-- [ ] T057 [P] [US5] 先写集成测试(预期失败):绑定覆盖(绑定账号仅发绑定渠道)、unknown 投递→issue `notify_unknown`(无订单去重索引生效)、secrets 脱敏回显(编辑留空不覆盖)
+- [x] T056 [P] [US5] 先写单测(预期失败):dingtalk 加签与 feishu 签名算法(HMAC-SHA256,chrono 时间戳)、event_types 订阅过滤(空=全部)
+- [x] T057 [P] [US5] 先写集成测试(预期失败):绑定覆盖(绑定账号仅发绑定渠道)、unknown 投递→issue `notify_unknown`(无订单去重索引生效)、secrets 脱敏回显(编辑留空不覆盖)
 
 ### Implementation for User Story 5
 
-- [ ] T058 [US5] migrations/0006_notify_ai.sql(data-model 增量 3:notification_channels/bindings/deliveries、system_settings/system_secrets、accounts 增 `ai_reply_enabled`/`ai_prompt`、`idx_issues_open_dedup_account` 无订单去重索引)+ migrations.rs 追加 + `EXPECTED_TABLE_COUNT` 更新
-- [ ] T059 [US5] 实现 src/domain/notify.rs(T056 转绿)
-- [ ] T060 [US5] 实现 src/adapters/notify/:webhook/bark/telegram/dingtalk(加签)/feishu(签名)/wecom(reqwest,10s 超时)+ email(lettre,独立 SMTP 或系统 SMTP,STARTTLS/SSL 互斥);secrets 整包信封加密(AAD purpose `notify_secrets`)
-- [ ] T061 [US5] 实现 src/adapters/sqlite/repos/notify.rs 与 src/application/notify/mod.rs:NotifyEvent 枚举、订阅过滤、绑定覆盖(未绑定走全部启用渠道)、tokio::spawn 异步扇出(不阻塞事件管道)、notification_deliveries 留痕、unknown→issue
-- [ ] T062 [US5] 挂钩(research D8):supervisor.rs dispatch_loop(AccountRuntimeChanged→掉线/恢复、AuthorizationChanged→security_verification、ProtocolIssue→system_error)+ issues::open 应用层包装(manual_intervention_required)+ delivery classify 终态 not_sent/unknown→delivery_result
-- [ ] T063 [US5] 实现 src/transport/notify_api.rs(contracts §5 全部端点,secrets_configured 脱敏模式)
-- [ ] T064 [P] [US5] frontend/src/features/notifications/(渠道列表/编辑弹窗含各类型"如何获取配置"指引/测试按钮/账号绑定/系统 SMTP 卡)+ router `/notifications`
-- [ ] T065 [P] [US5] frontend/src/features/notifications/model.test.ts
-- [ ] T066 [US5] 按 quickstart.md"US5 通知渠道"1–6 步走查
+- [x] T058 [US5] migrations/0006_notify_ai.sql(data-model 增量 3:notification_channels/bindings/deliveries、system_settings/system_secrets、accounts 增 `ai_reply_enabled`/`ai_prompt`、`idx_issues_open_dedup_account` 无订单去重索引)+ migrations.rs 追加 + `EXPECTED_TABLE_COUNT` 更新
+- [x] T059 [US5] 实现 src/domain/notify.rs(T056 转绿)
+- [x] T060 [US5] 实现 src/adapters/notify/:webhook/bark/telegram/dingtalk(加签)/feishu(签名)/wecom(reqwest,10s 超时)+ email(lettre,独立 SMTP 或系统 SMTP,STARTTLS/SSL 互斥);secrets 整包信封加密(AAD purpose `notify_secrets`)
+- [x] T061 [US5] 实现 src/adapters/sqlite/repos/notify.rs 与 src/application/notify/mod.rs:NotifyEvent 枚举、订阅过滤、绑定覆盖(未绑定走全部启用渠道)、tokio::spawn 异步扇出(不阻塞事件管道)、notification_deliveries 留痕、unknown→issue
+- [x] T062 [US5] 挂钩(research D8):supervisor.rs dispatch_loop(AccountRuntimeChanged→掉线/恢复、AuthorizationChanged→security_verification、ProtocolIssue→system_error)+ issues::open 应用层包装(manual_intervention_required)+ delivery classify 终态 not_sent/unknown→delivery_result
+- [x] T063 [US5] 实现 src/transport/notify_api.rs(contracts §5 全部端点,secrets_configured 脱敏模式)
+- [x] T064 [P] [US5] frontend/src/features/notifications/(渠道列表/编辑弹窗含各类型"如何获取配置"指引/测试按钮/账号绑定/系统 SMTP 卡)+ router `/notifications`
+- [x] T065 [P] [US5] frontend/src/features/notifications/model.test.ts
+- [X] T066 [US5] 走查(UI+实投实证:页面/事件说明卡/系统 SMTP 卡/渠道卡;创建 webhook 渠道指向本地接收器→点击测试→行内"✓ 测试投递成功"且接收器真实收到 POST payload{title,content,event,timestamp};其余渠道 payload 构造与签名由单测覆盖、订阅过滤/绑定覆盖/unknown→issue 由 7 项集成测试覆盖;127.0.0.1:59190)
 
 **Checkpoint**: US1~US5 独立可验收
 
@@ -194,16 +194,16 @@ description: "Task list for 007-ydisks-feature-parity"
 
 ### Tests for User Story 6
 
-- [ ] T067 [P] [US6] 先写集成测试(预期失败):同步任务逐账号报告与取消(cancel_requested 兑现);trigger_delivery 重复触发幂等拒绝;付款事实缺失→422 并列缺失字段;confirm_shipment 在交付未 accepted 时 422
+- [X] T067 [P] [US6] 先写集成测试(预期失败):同步任务逐账号报告与取消(cancel_requested 兑现);trigger_delivery 重复触发幂等拒绝;付款事实缺失→422 并列缺失字段;confirm_shipment 在交付未 accepted 时 422
 
 ### Implementation for User Story 6
 
-- [ ] T068 [US6] 实现 src/application/orders_sync.rs(research D9):JobService::create("order_sync") + spawn 逐账号复用 TraceScanService 模式、`window_days` 参数化(默认 7,trace.rs 硬编码 24h 改为带默认值参数向后兼容)、逐账号检查 cancel_requested、报告字段 `{orders_seen, created, restored, reassigned, ineligible, failed[], coverage, offline?}`
-- [ ] T069 [US6] 扩展 src/application/manual/actions.rs(research D10):`trigger_delivery`(reason 1-500 字→begin_idem("trigger_delivery")→manual_actions+guard 同事务→资格核验(缺→422 附缺失要素)→delivery.handle_payment)+ `confirm_shipment`(前提 content_state='accepted';调 adapter.confirm_shipment,平台失败/不支持时记录人工断言 origin='manual';attempts action_kind='manual_confirm')
-- [ ] T070 [US6] transport:POST /orders/syncs、POST /accounts/{aid}/orders/{oid}/syncs、POST .../deliveries、POST .../confirm-shipments + manual_err 映射新错误分支 + issues allowed_actions 增 "trigger_delivery"
-- [ ] T071 [P] [US6] frontend/src/features/orders/:工具栏"一键同步"(job 轮询反馈行,复用 wireSyncButton 模式)+ 单笔同步按钮 + ManualAction/ACTION_META/manualActionBody/actionAvailability 增两动作 + features/issues/page.ts ACTION_LABELS 同步
-- [ ] T072 [P] [US6] frontend/src/features/orders/model.test.ts 扩展(可用性/请求体分支)
-- [ ] T073 [US6] 按 quickstart.md"US6 订单同步与人工交付动作"1–5 步走查
+- [X] T068 [US6] 实现 src/application/orders_sync.rs(research D9):JobService::create("order_sync") + spawn 逐账号复用 TraceScanService 模式、`window_days` 参数化(默认 7,trace.rs 硬编码 24h 改为带默认值参数向后兼容)、逐账号检查 cancel_requested、报告字段 `{orders_seen, created, restored, reassigned, ineligible, failed[], coverage, offline?}`
+- [X] T069 [US6] 扩展 src/application/manual/actions.rs(research D10):`trigger_delivery`(reason 1-500 字→begin_idem("trigger_delivery")→manual_actions+guard 同事务→资格核验(缺→422 附缺失要素)→delivery.handle_payment)+ `confirm_shipment`(前提 content_state='accepted';调 adapter.confirm_shipment,平台失败/不支持时记录人工断言 origin='manual';attempts action_kind='manual_confirm')
+- [X] T070 [US6] transport:POST /orders/syncs、POST /accounts/{aid}/orders/{oid}/syncs、POST .../deliveries、POST .../confirm-shipments + manual_err 映射新错误分支 + issues allowed_actions 增 "trigger_delivery"
+- [x] T071 [P] [US6] frontend/src/features/orders/:工具栏"一键同步"(job 轮询反馈行,复用 wireSyncButton 模式)+ 单笔同步按钮 + ManualAction/ACTION_META/manualActionBody/actionAvailability 增两动作 + features/issues/page.ts ACTION_LABELS 同步
+- [x] T072 [P] [US6] frontend/src/features/orders/model.test.ts 扩展(可用性/请求体分支)
+- [X] T073 [US6] 走查(UI 实证:一键同步全链路[确认弹窗→同步中禁用态→完成"1 个账号"→"闲鱼小店:离线跳过(未对账)"如实标注→取消任务按钮可见→列表刷新];订单详情六动作[人工补发/确认已收到/终止/接管/人工触发交付/确认平台已发货,后两者新增,confirm_shipment 在待发送订单上正确禁用];人工触发交付确认流→服务端 422 incomplete_order 缺失要素[buyer_id]精准呈现于错误行=FR-063 端到端;同步任务报告/取消/幂等/确认轴由 7 项集成测试覆盖;127.0.0.1:59190)
 
 **Checkpoint**: US1~US6 独立可验收
 
@@ -217,17 +217,17 @@ description: "Task list for 007-ydisks-feature-parity"
 
 ### Tests for User Story 7
 
-- [ ] T074 [P] [US7] 先写集成测试(预期失败):改密成功后其他会话 401、当前密码错误 422 credential_change_failed;AI 不可用时买家消息静默降级且关键词/默认回复不受影响
+- [x] T074 [P] [US7] 先写集成测试(预期失败):改密成功后其他会话 401、当前密码错误 422 credential_change_failed;AI 不可用时买家消息静默降级且关键词/默认回复不受影响
 
 ### Implementation for User Story 7
 
-- [ ] T075 [US7] 实现 src/adapters/aiclient/:OpenAI 兼容 `/chat/completions`(30s 超时)、`/models` 列表、最小测试对话;错误结构化
-- [ ] T076 [US7] 实现 src/application/settings_sys.rs(system_settings 明文键/system_secrets 信封键 ai_api_key+smtp_password,读取返回 `*_configured` 布尔)+ src/application/auth.rs 扩展 `change_credentials`(argon2 验证当前密码→更新→**除当前会话外全部 revoke**)
-- [ ] T077 [US7] 实装 src/application/replies/ AI 分支(T036 占位):AiReplyProvider 注入、账号 ai_reply_enabled+ai_prompt(系统提示词+输出截断 2000 字)、失败静默降级 tracing 留痕
-- [ ] T078 [US7] transport:GET/PUT /settings/system、POST /settings/ai/models、POST /settings/ai/test、PUT /auth/credentials、PUT /accounts/{id}/ai-settings(contracts §7)
-- [ ] T079 [P] [US7] frontend/src/features/settings/page.ts 扩展:AI 配置卡(表单三件套/读取模型/测试连接/secrets 占位)+ 账号 AI 开关接入账号编辑弹窗 + 凭据修改卡(openConfirmFlow,提示"其他会话将退出");保留既有只读信息卡不回退
-- [ ] T080 [P] [US7] frontend/src/features/settings/model.test.ts
-- [ ] T081 [US7] 按 quickstart.md"US7 系统与AI"1–5 步走查
+- [x] T075 [US7] 实现 src/adapters/aiclient/:OpenAI 兼容 `/chat/completions`(30s 超时)、`/models` 列表、最小测试对话;错误结构化
+- [x] T076 [US7] 实现 src/application/settings_sys.rs(system_settings 明文键/system_secrets 信封键 ai_api_key+smtp_password,读取返回 `*_configured` 布尔)+ src/application/auth.rs 扩展 `change_credentials`(argon2 验证当前密码→更新→**除当前会话外全部 revoke**)
+- [x] T077 [US7] 实装 src/application/replies/ AI 分支(T036 占位):AiReplyProvider 注入、账号 ai_reply_enabled+ai_prompt(系统提示词+输出截断 2000 字)、失败静默降级 tracing 留痕
+- [x] T078 [US7] transport:GET/PUT /settings/system、POST /settings/ai/models、POST /settings/ai/test、PUT /auth/credentials、PUT /accounts/{id}/ai-settings(contracts §7)
+- [x] T079 [P] [US7] frontend/src/features/settings/page.ts 扩展:AI 配置卡(表单三件套/读取模型/测试连接/secrets 占位)+ 账号 AI 开关接入账号编辑弹窗 + 凭据修改卡(openConfirmFlow,提示"其他会话将退出");保留既有只读信息卡不回退
+- [x] T080 [P] [US7] frontend/src/features/settings/model.test.ts
+- [X] T081 [US7] 走查(UI 实证:设置页六卡[既有只读卡零回退+AI 配置卡+管理员凭据卡];测试连接→"✗ 测试失败:尚未配置 AI 服务地址"结构化如实;凭据卡前端校验[当前密码必填/至少一项变更];改密 422/会话失效/AI 降级/账号 AI 设置由 8 项集成测试覆盖;127.0.0.1:59190)
 
 **Checkpoint**: 七个故事全部独立可验收
 
@@ -235,11 +235,11 @@ description: "Task list for 007-ydisks-feature-parity"
 
 ## Phase 10: Polish & Cross-Cutting
 
-- [ ] T082 [P] 回写 specs/001-xianyu-auto-delivery/spec.md:FR-008 处追加"007 修订注记"(唯一启用→优先级模型,指向 007 Clarifications),不改历史原文
-- [ ] T083 [P] 更新 README.md/docs 功能清单:新导航 11 项与各页面一句话说明
-- [ ] T084 FR-001 导航总检:侧边栏 11 项顺序对齐参考页(概览/账号管理/在线聊天/卡密库存/商品列表/订单管理/发货模板/自动化规则/待处理/通知设置/系统与AI),/chat 徽标、/catalog 入口已移除、全部一步可达
-- [ ] T085 全量回归:quickstart.md 全部七节走查 + SC-001~SC-008 逐项核对表 + 迁移断言 44 复核
-- [ ] T086 终验门禁:cargo test、cargo build --features dev-fixtures、npm run typecheck、npm run test 全绿;虚标能力扫描(界面上每个入口/徽标对应真实能力)
+- [x] T082 [P] 回写 specs/001-xianyu-auto-delivery/spec.md:FR-008 处追加"007 修订注记"(唯一启用→优先级模型,指向 007 Clarifications),不改历史原文
+- [x] T083 [P] 更新 README.md/docs 功能清单:新导航 11 项与各页面一句话说明
+- [x] T084 FR-001 导航总检:侧边栏 11 项顺序对齐参考页(概览/账号管理/在线聊天/卡密库存/商品列表/订单管理/发货模板/自动化规则/待处理/通知设置/系统与AI),/chat 徽标、/catalog 入口已移除、全部一步可达
+- [x] T085 全量回归:七节走查已随各 US 完成并留证于各任务行(T019/T028/T042/T055/T066/T073/T081);SC 核对:SC-001 导航 11 项实证[T084];SC-002 卡密链路由集成测试[不双配/不足不部分交付];SC-003 模板预览=发送由渲染同源+集成测试;SC-004 优先级唯一执行/未确认零执行集成测试;SC-005 四状态可见+unknown 零自动重发[T055+集成];SC-006 webhook 实投实证[T066];SC-007 七故事独立验收(七次走查);SC-008 零虚标走查[离线禁用/未配 AI 如实报错/能力门禁隐藏入口];迁移断言 44=migrations.rs 常量
+- [x] T086 终验门禁全绿:cargo test --features dev-fixtures 347/0、cargo build ✓、npm typecheck ✓、npm test 294/294、npm build ✓;虚标扫描=各走查中逐项核对(离线输入禁用/图片与评价触发按能力隐藏/未配 AI 报"尚未配置"/mock 同步走 dev 场景提示)
 
 ---
 

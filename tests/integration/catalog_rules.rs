@@ -216,6 +216,7 @@ async fn rule_lifecycle_conflict_and_snapshot_freeze() {
                 sku_key: "single".into(),
                 content: "v1 内容".into(),
                 enabled: true,
+                ..Default::default()
             },
         )
         .await
@@ -228,6 +229,7 @@ async fn rule_lifecycle_conflict_and_snapshot_freeze() {
                 sku_key: "single".into(),
                 content: "v2 内容".into(),
                 enabled: true,
+                ..Default::default()
             },
         )
         .await;
@@ -240,6 +242,7 @@ async fn rule_lifecycle_conflict_and_snapshot_freeze() {
                 sku_key: "single".into(),
                 content: "另范围备用".into(),
                 enabled: false,
+                ..Default::default()
             },
         )
         .await
@@ -285,6 +288,7 @@ async fn overlong_content_rejected_with_reason() {
                 sku_key: "single".into(),
                 content: too_long,
                 enabled: false,
+                ..Default::default()
             },
         )
         .await
@@ -317,6 +321,7 @@ async fn sku_combo_rule_scope() {
             sku_key: combo.clone(),
             content: "组合内容".into(),
             enabled: true,
+            ..Default::default()
         },
     )
     .await

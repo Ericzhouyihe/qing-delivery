@@ -260,11 +260,17 @@ async fn stats_开放事项计数() {
     seed_orders(&app, now).await;
     app.db
         .call(move |conn| {
-            for (id, state) in [("i1", "open"), ("i2", "open"), ("i3", "resolved")] {
+            // 007 0006 起:无订单 open 事项按 (account, kind, reason) 唯一
+            // (idx_issues_open_dedup_account),种子 reason 交错避免撞索引
+            for (id, state, reason) in [
+                ("i1", "open", "test-a"),
+                ("i2", "open", "test-b"),
+                ("i3", "resolved", "test-a"),
+            ] {
                 conn.execute(
                     "INSERT INTO issues (id, account_id, kind, reason_code, state, created_at)
-                     VALUES (?1, 'acct-1', 'delivery_unknown', 'test', ?2, 0)",
-                    rusqlite::params![id, state],
+                     VALUES (?1, 'acct-1', 'delivery_unknown', ?3, ?2, 0)",
+                    rusqlite::params![id, state, reason],
                 )?;
             }
             Ok::<(), rusqlite::Error>(())

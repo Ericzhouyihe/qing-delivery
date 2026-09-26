@@ -1,9 +1,11 @@
-/** 订单中心页(US5/T039):组合筛选 + 游标分页(翻页保留筛选)+ 详情抽屉。 */
+/** 订单中心页(US5/T039):组合筛选 + 游标分页(翻页保留筛选)+ 详情抽屉;
+ *  US6/T071 增一键同步(order_sync 任务轮询反馈 + 中途取消)。 */
 import { el } from "../../shared/dom";
-import { httpGet } from "../../shared/http";
+import { httpGet, httpPost } from "../../shared/http";
 import { isRecord, parsePage } from "../../shared/contracts";
 import { btn } from "../../ui/dom";
 import { asyncBlock } from "../../ui/states";
+import { confirmDialog } from "../../ui/modal";
 import { renderOrdersTable } from "./table";
 import { openOrderDetail } from "./detail";
 import {
@@ -11,6 +13,9 @@ import {
   EMPTY_FILTERS,
   filtersToQuery,
   parseOrderRow,
+  parseSyncReports,
+  syncFailedDetail,
+  syncReportLine,
   type OrderFilters
 } from "./model";
 import type { PageFactory } from "../../app/page";
@@ -48,6 +53,15 @@ export const ordersPage: PageFactory = (root) => {
 
   const accountNames = new Map<string, string>();
   const itemTitles = new Map<string, string>();
+
+  // 一键同步工具栏(US6/T071):与筛选栏同级;置于异步块外,列表重载不打断任务反馈
+  const syncBar = el("div", { class: "filter-bar" });
+  const syncBtn = btn("一键同步订单", { variant: "primary" });
+  const syncCancelBtn = btn("取消任务", { variant: "danger" });
+  const syncFeedback = el("div", { class: "muted", style: "font-size:var(--text-sm);" });
+  syncCancelBtn.style.display = "none";
+  syncBar.append(syncBtn, syncCancelBtn, syncFeedback);
+  root.append(syncBar);
 
   const buildBar = (reload: () => void): void => {
     const orderIdInput = el("input", { type: "text", placeholder: "订单号搜索", value: filters.orderId }) as HTMLInputElement;
@@ -183,6 +197,137 @@ export const ordersPage: PageFactory = (root) => {
     { skeletonLines: 8 }
   );
 
+  // 一键同步接线(US6/T071):确认 → POST /orders/syncs → 轮询任务至终态 →
+  // 逐账号摘要(失败明细悬浮)+ 完成后刷新列表;cancel_allowed 时可中途取消。
+  let syncStopped = false;
+  let syncJobId: string | null = null;
+  let syncJobVersion = 0;
+
+  const reloadOrders = (): void => {
+    cursorStack.length = 1;
+    pageNumber = 1;
+    block.reload();
+  };
+
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => { window.setTimeout(resolve, ms); });
+
+  const syncAccountRows = (resultRef: string | null): HTMLElement[] =>
+    parseSyncReports(resultRef).map((r) => {
+      const failed = syncFailedDetail(r);
+      const attrs: Record<string, string> = { class: "muted", style: "font-size:var(--text-xs);" };
+      if (failed !== "") attrs["title"] = failed;
+      return el("div", attrs, syncReportLine(r, accountNames.get(r.accountId) ?? r.accountId));
+    });
+
+  const resetSyncUi = (): void => {
+    syncBtn.disabled = false;
+    syncBtn.textContent = "一键同步订单";
+    syncCancelBtn.style.display = "none";
+    syncCancelBtn.disabled = false;
+    syncJobId = null;
+  };
+
+  const finishSync = (tone: string, headline: string, resultRef: string | null): void => {
+    syncCancelBtn.style.display = "none";
+    syncFeedback.className = tone;
+    const rows = syncAccountRows(resultRef);
+    syncFeedback.replaceChildren(
+      el("div", {}, rows.length > 0 ? `${headline}(${rows.length} 个账号)` : headline),
+      ...rows
+    );
+    resetSyncUi();
+    reloadOrders();
+  };
+
+  const pollSyncJob = async (jobId: string): Promise<void> => {
+    for (let i = 0; i < 150; i++) {
+      await sleep(2_000);
+      if (syncStopped) return;
+      let j: Record<string, unknown>;
+      try {
+        j = (await httpGet(`/api/v1/jobs/${jobId}`)) as Record<string, unknown>;
+      } catch {
+        continue; // 单次查询失败不终止轮询
+      }
+      const summary = isRecord(j["summary"]) ? (j["summary"] as Record<string, unknown>) : {};
+      const state = String(summary["state"] ?? "running");
+      if (typeof summary["version"] === "number") syncJobVersion = summary["version"];
+      const resultRef = typeof summary["result_ref"] === "string" ? summary["result_ref"] : null;
+      const safeError = typeof summary["safe_error"] === "string" ? summary["safe_error"] : null;
+      if (state === "succeeded") {
+        finishSync("tone-normal", "同步完成", resultRef);
+        return;
+      }
+      if (state === "cancelled") {
+        // 取消意图在账号边界兑现,任务仍写回已处理账号的结果(服务端 T068)
+        finishSync("tone-warning", "已取消,已处理部分保留", resultRef);
+        return;
+      }
+      if (state === "failed" || state === "needs_review") {
+        finishSync("error-text", `同步失败:${safeError ?? `任务异常结束(${state})`}`, resultRef);
+        return;
+      }
+      // 进行中/已请求取消:展示阶段;cancel_allowed 时露出取消按钮
+      syncFeedback.className = "muted";
+      const stage = String(j["stage"] ?? "");
+      const note =
+        state === "cancel_requested"
+          ? "已请求取消,等待任务在账号边界停下…"
+          : `同步中…${stage === "" || stage === "null" ? "" : `(阶段:${stage})`}`;
+      syncFeedback.replaceChildren(el("div", {}, note));
+      if (j["cancel_allowed"] === true) syncCancelBtn.style.display = "";
+    }
+    syncFeedback.className = "muted";
+    syncFeedback.replaceChildren(el("div", {}, "同步仍在进行(超过界面跟踪时长);稍后刷新页面查看订单。"));
+    resetSyncUi();
+    reloadOrders();
+  };
+
+  const startSync = async (): Promise<void> => {
+    syncBtn.disabled = true;
+    syncBtn.textContent = "同步中…";
+    syncCancelBtn.disabled = false;
+    syncFeedback.className = "muted";
+    syncFeedback.replaceChildren(el("div", {}, "已发起同步,正在按账号对账(窗口默认 7 天)…"));
+    try {
+      const res = (await httpPost("/api/v1/orders/syncs", {})) as Record<string, unknown>;
+      const job = isRecord(res["job"]) ? (res["job"] as Record<string, unknown>) : {};
+      syncJobId = typeof job["id"] === "string" ? job["id"] : "";
+      if (syncJobId === "") throw new Error("服务未返回任务句柄");
+      await pollSyncJob(syncJobId);
+    } catch (e) {
+      syncFeedback.className = "error-text";
+      syncFeedback.replaceChildren(el("div", {}, `同步不可用:${e instanceof Error ? e.message : String(e)}`));
+      resetSyncUi();
+    }
+  };
+
+  syncBtn.addEventListener("click", () => {
+    confirmDialog({
+      title: "一键同步订单",
+      message:
+        "将按账号逐个与平台全量对账:补建缺失订单、恢复停滞交付并修正状态。同步窗口为最近 7 天;离线账号自动跳过并标注。任务进行中可随时取消,已处理账号的结果保留。",
+      confirmLabel: "开始同步",
+      onConfirm: () => {
+        void startSync();
+      }
+    });
+  });
+
+  syncCancelBtn.addEventListener("click", async () => {
+    if (syncJobId === null) return;
+    syncCancelBtn.disabled = true;
+    try {
+      await httpPost(`/api/v1/jobs/${syncJobId}/cancel`, { expected_version: syncJobVersion, reason: "用户取消" });
+      syncFeedback.replaceChildren(el("div", {}, "已请求取消,等待任务在账号边界停下…"));
+    } catch (e) {
+      syncCancelBtn.disabled = false;
+      syncFeedback.replaceChildren(
+        el("div", { class: "error-text" }, `取消失败:${e instanceof Error ? e.message : String(e)}`)
+      );
+    }
+  });
+
   // 概览下钻:聚焦指定订单(US2-2/SC-203)
   const focus = new URLSearchParams(location.search).get("focus");
   if (focus !== null) {
@@ -201,5 +346,8 @@ export const ordersPage: PageFactory = (root) => {
     })();
   }
 
-  return () => block.dispose();
+  return () => {
+    syncStopped = true; // 页面切换终止任务轮询(宪章 III 资源取向)
+    block.dispose();
+  };
 };

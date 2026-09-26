@@ -78,6 +78,9 @@ impl ErrorCode {
                 StatusCode::UNAUTHORIZED
             }
             ErrorCode::CsrfRejected | ErrorCode::OriginRejected => StatusCode::FORBIDDEN,
+            // 007 contracts §4/§6:账号离线不可用属请求级拒绝(403),非服务故障;
+            // 该码此前无任何端点使用,按契约修正映射
+            ErrorCode::AccountUnavailable => StatusCode::FORBIDDEN,
             ErrorCode::ResourceNotFound => StatusCode::NOT_FOUND,
             ErrorCode::VersionConflict
             | ErrorCode::ActionInProgress
@@ -96,9 +99,9 @@ impl ErrorCode {
             | ErrorCode::CredentialChangeFailed => StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::PersistenceUnavailable
-            | ErrorCode::AccountUnavailable
-            | ErrorCode::ServiceStopping => StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::PersistenceUnavailable | ErrorCode::ServiceStopping => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
         }
     }
 
@@ -171,5 +174,13 @@ mod tests {
             assert_eq!(code.status().as_u16(), status);
             assert_eq!(code.retryable(), retryable);
         }
+    }
+
+    /// 007 contracts §4/§6:account_unavailable = 403(账号离线的请求级拒绝)。
+    #[test]
+    fn account_unavailable_maps_403() {
+        assert_eq!(ErrorCode::AccountUnavailable.snake(), "account_unavailable");
+        assert_eq!(ErrorCode::AccountUnavailable.status().as_u16(), 403);
+        assert!(!ErrorCode::AccountUnavailable.retryable());
     }
 }

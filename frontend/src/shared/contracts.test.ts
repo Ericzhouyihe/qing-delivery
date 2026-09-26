@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCardPool, parseStatsOverview } from "./contracts";
+import { parseCardPool, parseChatCapabilities, parseStatsOverview } from "./contracts";
 
 describe("parseStatsOverview 契约解析(005/T008)", () => {
   it("正常载荷完整解析", () => {
@@ -112,5 +112,25 @@ describe("parseCardPool 卡密组契约解析(007 T015)", () => {
     expect(parseCardPool({ kind: "voice" }).kind).toBe("data");
     expect(() => parseCardPool("nope")).toThrow();
     expect(() => parseCardPool(null)).toThrow();
+  });
+});
+
+describe("parseChatCapabilities 聊天能力可选字段(007 T035,缺失降级 false)", () => {
+  it("mock 档两字段为 true 时如实解析", () => {
+    const v = parseChatCapabilities({ chat_send_image: true, chat_history_backfill: true });
+    expect(v).toEqual({ chatSendImage: true, chatHistoryBackfill: true });
+  });
+
+  it("live 档为 false;字段缺失/类型异常降级 false 不抛错", () => {
+    expect(parseChatCapabilities({ chat_send_image: false, chat_history_backfill: false })).toEqual({
+      chatSendImage: false,
+      chatHistoryBackfill: false
+    });
+    expect(parseChatCapabilities({})).toEqual({ chatSendImage: false, chatHistoryBackfill: false });
+    expect(parseChatCapabilities(null)).toEqual({ chatSendImage: false, chatHistoryBackfill: false });
+    expect(parseChatCapabilities({ chat_send_image: "yes", chat_history_backfill: 1 })).toEqual({
+      chatSendImage: false,
+      chatHistoryBackfill: false
+    });
   });
 });

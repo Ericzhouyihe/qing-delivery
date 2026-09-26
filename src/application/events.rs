@@ -130,7 +130,8 @@ impl EventPipeline {
             }
             PlatformEvent::OutgoingMessageEvidence { .. } => Ok(EventOutcome::Observed),
             PlatformEvent::AuthorizationChanged { .. }
-            | PlatformEvent::AccountRuntimeChanged { .. } => Ok(EventOutcome::Observed),
+            | PlatformEvent::AccountRuntimeChanged { .. }
+            | PlatformEvent::ChatMessageReceived { .. } => Ok(EventOutcome::Observed),
             PlatformEvent::TraceGap { reason, .. }
             | PlatformEvent::ProtocolIssue { reason, .. } => {
                 Ok(EventOutcome::BadEntry(reason.clone()))
@@ -185,7 +186,8 @@ fn meta_of(event: &PlatformEvent) -> &crate::application::ports::platform::Event
         | PlatformEvent::OrderStateSignal { meta, .. }
         | PlatformEvent::OutgoingMessageEvidence { meta, .. }
         | PlatformEvent::TraceGap { meta, .. }
-        | PlatformEvent::ProtocolIssue { meta, .. } => meta,
+        | PlatformEvent::ProtocolIssue { meta, .. }
+        | PlatformEvent::ChatMessageReceived { meta, .. } => meta,
     }
 }
 

@@ -2,14 +2,14 @@
   "version": "1.0.9.dev0",
   "integration_state_schema": 1,
   "installed_integrations": [
-    "zcode"
+    "dsh"
   ],
   "integration_settings": {
-    "zcode": {
+    "dsh": {
       "script": "ps",
       "invoke_separator": "-"
     }
   },
-  "integration": "zcode",
-  "default_integration": "zcode"
+  "integration": "dsh",
+  "default_integration": "dsh"
 }

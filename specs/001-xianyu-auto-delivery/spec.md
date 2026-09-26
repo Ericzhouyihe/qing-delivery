@@ -202,6 +202,11 @@ Ydisks-Xianyu-Helper 的业务流程，建立轻交付的首个可交付版本�
   文字保留换行和链接，空白或超长内容明确拒绝；预览不向买家发送。（US3-2、US3-7）
 - **FR-008**: 同一完整匹配范围最多启用一条规则，保存时阻止冲突，执行时也必须检测歧义。
   首版不提供全账号兜底、标题模糊匹配或只匹配部分规格的发货规则。（US1-4、US3-3）
+  > **007 修订注记(2026-09-26)**:007-ydisks-feature-parity 已将"同范围仅一条启用"修订为
+  > "多条并存 + 优先级选取"模型——唯一索引重建为 `(account_id, item_id, sku_key, trigger_type, priority) WHERE enabled=1`,
+  > 同范围同触发仅执行优先级数字最小的一条,同优先级重复仍拒绝保存。防重复交付的保障相应由
+  > 唯一性约束改为"仅执行最高一条 + 既有执行互斥(order_execution_guards)+ T1 initial 唯一索引"三层。
+  > 详见 specs/007-ydisks-feature-parity/spec.md 的 Clarifications 与 research.md D1。
 - **FR-009**: 规则禁用或商品确认下架后，不得开始未发送的新交付；
   更新内容只影响此后新建任务，已创建任务和补发保留原内容版本。（US3-5、US3-6）
 

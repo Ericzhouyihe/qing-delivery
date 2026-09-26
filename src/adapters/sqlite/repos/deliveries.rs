@@ -249,6 +249,8 @@ pub fn prepare_attempt(
         "confirmation" => "('accepted')",
         // 人工补发允许:已交付(买家要求重发)/未知(核对后)/确定未发送(FR-022)
         "manual_resend" => "('accepted','unknown','not_sent')",
+        // 007 US6:人工确认平台已发货,前提内容交付 accepted(FR-062)
+        "manual_confirm" => "('accepted')",
         _ => "('queued','not_sent')",
     };
     let n = conn.execute(
@@ -382,9 +384,54 @@ pub fn insert_proof(
     Ok(())
 }
 
-/// T3:获取 order guard;已有活跃 guard 返回 None(自动/人工互斥)。
-pub fn acquire_guard(
+/// 该交付全部 attempt 已确认的 content_digest 清单(007 US2:多消息续发
+/// 以 proof 判定已确认条目,research D4;单条路径不使用)。
+pub fn confirmed_digests(conn: &Connection, delivery_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT dp.content_digest FROM delivery_proofs dp
+         JOIN attempts a ON a.id = dp.attempt_id
+         WHERE a.delivery_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![delivery_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// 证明行(多消息全部已确认时的防御性收尾材料)。
+pub struct ProofRow {
+    pub id: String,
+    pub platform_message_id: Option<String>,
+    pub request_id: String,
+    pub buyer_id: Option<String>,
+    pub content_digest: String,
+}
+
+/// 交付最近一条证明(按落库顺序)。
+pub fn latest_proof_for_delivery(
     conn: &Connection,
+    delivery_id: &str,
+) -> rusqlite::Result<Option<ProofRow>> {
+    conn.query_row(
+        "SELECT dp.id, dp.platform_message_id, dp.request_id, dp.buyer_id, dp.content_digest
+         FROM delivery_proofs dp JOIN attempts a ON a.id = dp.attempt_id
+         WHERE a.delivery_id = ?1 ORDER BY dp.rowid DESC LIMIT 1",
+        params![delivery_id],
+        |r| {
+            Ok(ProofRow {
+                id: r.get(0)?,
+                platform_message_id: r.get(1)?,
+                request_id: r.get(2)?,
+                buyer_id: r.get(3)?,
+                content_digest: r.get(4)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// T3:获取 order guard;已有活跃 guard 返回 None(自动/人工互斥)。
+pub fn acquire_guard(    conn: &Connection,
     order_id: &str,
     delivery_id: &str,
     attempt_id: &str,

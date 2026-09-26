@@ -2,7 +2,7 @@
  *  "算"在 model.ts(纯函数),本文件只装配与调用既有 API(宪章 II);
  *  既有确认流与轮询行为零回退(FR-012)。 */
 import { el } from "../../shared/dom";
-import { ApiHttpError, httpGet, httpPost, httpRequest, httpPatch } from "../../shared/http";
+import { ApiHttpError, httpGet, httpPost, httpRequest, httpPatch, httpPut } from "../../shared/http";
 import { badgeEl, accountBadge } from "../../ui/badge";
 import { btn } from "../../ui/dom";
 import { asyncBlock } from "../../ui/states";
@@ -10,6 +10,8 @@ import { formatRelative, startTicker } from "../../ui/time";
 import { confirmDialog, openModal } from "../../ui/modal";
 import { icon, type IconName } from "../../ui/icons";
 import { createSegmented } from "../../ui/segmented";
+import { errorHint } from "../../shared/contracts";
+import { AI_PROMPT_MAX_CHARS, validateAiPrompt } from "../settings/model";
 import {
   deriveCapabilityTags,
   filterAccounts,
@@ -385,7 +387,7 @@ export const accountsPage: PageFactory = (root) => {
     return el("div", { class: "account-row" }, avatarEl(a), main, actionsEl(a, syncBadge, syncVerify));
   };
 
-  /** 004:账号编辑弹窗(对齐 Ydisks AccountEditModal)。 */
+  /** 004:账号编辑弹窗(对齐 Ydisks AccountEditModal;007 T079 增 AI 自动回复区)。 */
   const openEditModal = (a: AccountCard): void => {
     const handle = openModal(null, { title: "编辑账号" });
     const remarkInput = el("input", { type: "text", value: a.remark ?? "", placeholder: "为账号添加备注(≤64 字符)" }) as HTMLInputElement;
@@ -400,26 +402,77 @@ export const accountsPage: PageFactory = (root) => {
       sw.addEventListener("change", () => onChange(sw.checked));
       return el("label", { class: "check-row" }, sw, label);
     };
+
+    // ---- 007 US7:AI 自动回复(FR-071;开关+提示词,保存走独立 ai-settings 请求)----
+    let aiReply = a.aiReplyEnabled;
+    let aiDirty = false;
+    const aiPromptArea = el("textarea", {
+      rows: "4",
+      placeholder: "自定义 AI 提示词(≤2000 字):角色设定、语气、经营范围等;留空使用默认客服提示词",
+      style: "min-height:72px;"
+    }) as HTMLTextAreaElement;
+    aiPromptArea.value = a.aiPrompt ?? "";
+    const promptCount = el("span", { class: "muted", style: "font-size:var(--text-xs);" },
+      `${[...aiPromptArea.value].length} / ${AI_PROMPT_MAX_CHARS}`);
+    aiPromptArea.addEventListener("input", () => {
+      aiDirty = true;
+      const n = [...aiPromptArea.value].length;
+      promptCount.textContent = `${n} / ${AI_PROMPT_MAX_CHARS}`;
+      promptCount.classList.toggle("error-text", n > AI_PROMPT_MAX_CHARS);
+    });
+
+    /** 逐请求错误行:备注/开关/AI 三类保存各自报错,互不掩盖(T079)。 */
+    const failLines: string[] = [];
+    const apiMsg = (e: unknown): string =>
+      e instanceof ApiHttpError ? errorHint(e.body?.code, e.message)
+        : e instanceof Error ? e.message : String(e);
+
     save.addEventListener("click", async () => {
       const v = remarkInput.value.trim();
+      failLines.length = 0;
+      hint.textContent = "";
       if (v.length > 64) { hint.textContent = "备注不得超过 64 字符"; return; }
+      const promptCheck = validateAiPrompt(aiPromptArea.value);
+      if (!promptCheck.ok) { hint.textContent = `AI ${promptCheck.message}`; return; }
       save.disabled = true;
+      // 1) 备注(既有行为)
       try {
         await httpPatch(`/api/v1/accounts/${a.id}`, { remark: v.length === 0 ? null : v });
-        if (autoDelivery !== a.autoDelivery || autoConfirm !== a.autoConfirm) {
+      } catch (e) {
+        failLines.push(`备注保存失败:${apiMsg(e)}`);
+      }
+      // 2) 自动化开关(仅在变更时)
+      if (failLines.length === 0 && (autoDelivery !== a.autoDelivery || autoConfirm !== a.autoConfirm)) {
+        try {
           await httpPost(`/api/v1/accounts/${a.id}/control`, {
             expected_version: a.controlVersion,
             auto_delivery_enabled: autoDelivery,
             auto_confirm_enabled: autoConfirm,
             acknowledge_monitoring_scope: true,
           });
+        } catch (e) {
+          failLines.push(`自动化开关保存失败:${apiMsg(e)}`);
         }
-        handle.close(true);
-        blockRef?.reload();
-      } catch (e) {
-        hint.textContent = `保存失败:${e instanceof Error ? e.message : String(e)}`;
-        save.disabled = false;
       }
+      // 3) AI 设置(独立请求;失败单独报错行,不回滚前两项)
+      if (failLines.length === 0) {
+        try {
+          await httpPut(`/api/v1/accounts/${a.id}/ai-settings`, {
+            ai_reply_enabled: aiReply,
+            ai_prompt: aiPromptArea.value
+          });
+        } catch (e) {
+          failLines.push(`AI 设置保存失败:${apiMsg(e)}`);
+        }
+      }
+      if (failLines.length > 0) {
+        hint.replaceChildren(...failLines.map((line) => el("div", {}, line)));
+        save.disabled = false;
+        return;
+      }
+      aiDirty = false;
+      handle.close(true);
+      blockRef?.reload();
     });
     cancel.addEventListener("click", () => handle.close(true));
     const avatarBig = a.avatarUrl !== null && a.avatarUrl.length > 0
@@ -441,6 +494,12 @@ export const accountsPage: PageFactory = (root) => {
         mkSwitch("自动交付", a.autoDelivery, (v) => { autoDelivery = v; }),
         mkSwitch("自动平台确认", a.autoConfirm, (v) => { autoConfirm = v; }),
         el("div", { class: "hint" }, "开关保存时生效;首次启用自动交付需确认监控范围")),
+      el("div", { class: "field" }, el("label", {}, "AI 自动回复"),
+        mkSwitch("开启 AI 自动回复", a.aiReplyEnabled, (v) => { aiReply = v; aiDirty = true; }),
+        aiPromptArea,
+        el("div", { style: "display:flex;justify-content:space-between;gap:12px;" },
+          el("span", { class: "hint" }, "买家消息未命中关键词时由 AI 生成回复;AI 仅生成客服文案,不参与发货或付款判断;需先在「系统与AI」页配置 AI 服务"),
+          promptCount)),
       hint,
       el("div", { style: "display:flex;gap:12px;justify-content:flex-end;margin-top:16px;" }, cancel, save)
     );

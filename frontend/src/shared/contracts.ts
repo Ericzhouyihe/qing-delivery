@@ -350,3 +350,20 @@ export function parseCardPool(v: unknown): CardPoolDto {
   }
   return out;
 }
+
+/** 聊天能力声明(007 D6/T035;GET /capabilities 可选字段)。
+ *  旧后端/降级路径缺失时按 false 处理:隐藏图片入口、显示"仅展示接入后收到的会话"。
+ *  页面消费在 US4(T047 接线)。 */
+export interface ChatCapabilities {
+  chatSendImage: boolean;
+  chatHistoryBackfill: boolean;
+}
+
+/** capabilities 响应的聊天能力解析:字段可选,缺失/类型异常一律降级 false。 */
+export function parseChatCapabilities(raw: unknown): ChatCapabilities {
+  const v = isRecord(raw) ? raw : {};
+  return {
+    chatSendImage: v["chat_send_image"] === true,
+    chatHistoryBackfill: v["chat_history_backfill"] === true
+  };
+}

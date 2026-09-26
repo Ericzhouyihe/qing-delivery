@@ -62,3 +62,32 @@ pub fn update_password_hash(
     )?;
     Ok(())
 }
+
+/// 007 US7 修改凭据(FR-072):用户名/密码哈希更新;
+/// username 受 UNIQUE 约束(唯一管理员模型下防御性拒绝并发冲突)。
+pub fn update_credentials(
+    conn: &Connection,
+    admin_id: &str,
+    username: Option<&str>,
+    password_hash: Option<&str>,
+) -> rusqlite::Result<()> {
+    match (username, password_hash) {
+        (Some(u), Some(h)) => conn.execute(
+            "UPDATE admin SET username = ?1, password_hash = ?2, password_changed_at = ?3
+             WHERE id = ?4",
+            params![u, h, utc_now_ms(), admin_id],
+        )?,
+        (Some(u), None) => {
+            conn.execute(
+                "UPDATE admin SET username = ?1 WHERE id = ?2",
+                params![u, admin_id],
+            )?
+        }
+        (None, Some(h)) => conn.execute(
+            "UPDATE admin SET password_hash = ?1, password_changed_at = ?2 WHERE id = ?3",
+            params![h, utc_now_ms(), admin_id],
+        )?,
+        (None, None) => 0,
+    };
+    Ok(())
+}

@@ -32,6 +32,10 @@ fn manual_err(e: ManualError) -> Response {
             err_shared(ErrorCode::ResourceNotFound, &e.to_string())
         }
         ManualError::NotAllowed(msg) => err_shared(ErrorCode::IneligibleOrder, &msg),
+        ManualError::MissingFacts(fields) => err_shared(
+            ErrorCode::IncompleteOrder,
+            &format!("付款事实不完整,缺失:{fields:?};请先经订单同步或等待平台事件补全"),
+        ),
         ManualError::RiskConfirmationRequired | ManualError::InvalidReason => {
             err_shared(ErrorCode::InvalidRequest, &e.to_string())
         }
@@ -202,6 +206,101 @@ pub async fn takeover(
             Json(json!({ "operation_id": crate::domain::ids::new_id("op") })),
         )
             .into_response(),
+        Err(e) => manual_err(e),
+    }
+}
+
+/// 人工触发交付(007 US6,FR-061):付款事实齐备才走既有管线,幂等拒绝重复。
+pub async fn trigger_delivery(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Path((account_id, order_id)): Path<(String, String)>,
+    Json(body): Json<ManualBody>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, true).await {
+        return e.into_response();
+    }
+    let admin = admin_id(&state, &headers).await;
+    let Some(manual) = state.inner.manual.as_ref() else {
+        return err_shared(ErrorCode::ServiceStopping, "运行时适配器不可用");
+    };
+    match manual
+        .trigger_delivery(crate::application::manual::actions::ManualRequest {
+            admin_id: admin,
+            account_id,
+            order_db_id: order_id,
+            reason: body.reason,
+            risk_confirmed: false,
+            idempotency_key: body
+                .idempotency_key
+                .unwrap_or_else(|| format!("auto-{}", crate::domain::ids::new_request_key())),
+        })
+        .await
+    {
+        Ok(outcome) => {
+            let summary = match &outcome {
+                crate::application::manual::actions::ManualOutcome::Triggered(o) => format!("{o:?}"),
+                crate::application::manual::actions::ManualOutcome::TriggerNoOp(_) => {
+                    "already_handled".into()
+                }
+                _ => "replay".into(),
+            };
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "operation_id": crate::domain::ids::new_id("op"),
+                    "outcome": summary,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => manual_err(e),
+    }
+}
+
+/// 人工确认平台已发货(007 US6,FR-062):确认轴独立,不影响消息交付记录。
+pub async fn confirm_shipment(
+    State(state): SharedState,
+    headers: HeaderMap,
+    Path((account_id, order_id)): Path<(String, String)>,
+    Json(body): Json<ManualBody>,
+) -> Response {
+    if let Err(e) = require_admin_public(&state, &headers, true).await {
+        return e.into_response();
+    }
+    let admin = admin_id(&state, &headers).await;
+    let Some(manual) = state.inner.manual.as_ref() else {
+        return err_shared(ErrorCode::ServiceStopping, "运行时适配器不可用");
+    };
+    match manual
+        .confirm_shipment(crate::application::manual::actions::ManualRequest {
+            admin_id: admin,
+            account_id,
+            order_db_id: order_id,
+            reason: body.reason,
+            risk_confirmed: false,
+            idempotency_key: body
+                .idempotency_key
+                .unwrap_or_else(|| format!("auto-{}", crate::domain::ids::new_request_key())),
+        })
+        .await
+    {
+        Ok(outcome) => {
+            let platform_confirmed = matches!(
+                outcome,
+                crate::application::manual::actions::ManualOutcome::ConfirmShipment {
+                    platform_confirmed: true
+                }
+            );
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "operation_id": crate::domain::ids::new_id("op"),
+                    "platform_confirmed": platform_confirmed,
+                })),
+            )
+                .into_response()
+        }
         Err(e) => manual_err(e),
     }
 }

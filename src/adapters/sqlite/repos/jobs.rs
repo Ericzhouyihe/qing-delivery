@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::time_util::utc_now_ms;
 
+#[derive(Debug)]
 pub struct JobRow {
     pub id: String,
     pub kind: String,

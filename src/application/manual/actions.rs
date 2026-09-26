@@ -20,6 +20,8 @@ pub enum ManualError {
     OrderNotFound,
     #[error("交付任务不存在;请先完成历史接管或等待自动建任务")]
     NoDelivery,
+    #[error("付款事实不完整,人工触发被拒绝;缺失要素:{0:?}")]
+    MissingFacts(Vec<String>),
     #[error("当前状态不允许该操作:{0}")]
     NotAllowed(String),
     #[error("必须确认重复发送风险(acknowledge_duplicate_risk)")]
@@ -44,6 +46,7 @@ pub enum ManualError {
     Delivery(#[from] crate::application::delivery::service::DeliveryError),
 }
 
+#[derive(Debug)]
 pub enum ManualOutcome {
     ResentAccepted,
     ResentUnknown,
@@ -51,6 +54,13 @@ pub enum ManualOutcome {
     Terminated,
     Takeover(Box<HandleOutcome>),
     IdempotentReplay,
+    /// 人工触发交付执行了完整管线(007 US6,FR-061)
+    Triggered(Box<HandleOutcome>),
+    /// 重复触发:已有终态/未知 initial 或互斥,不再发送
+    TriggerNoOp(Box<HandleOutcome>),
+    /// 人工确认平台已发货;platform_confirmed=false 表示平台未接纳,
+    /// 仅记录人工断言,不谎报平台确认(007 US6,FR-062)
+    ConfirmShipment { platform_confirmed: bool },
 }
 
 pub struct ManualRequest {
@@ -571,6 +581,8 @@ pub trait ManualOps: Send + Sync {
     async fn mark_received(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError>;
     async fn terminate(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError>;
     async fn takeover(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError>;
+    async fn trigger_delivery(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError>;
+    async fn confirm_shipment(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError>;
 }
 
 #[async_trait::async_trait]
@@ -586,5 +598,308 @@ impl<A: PlatformAdapter + 'static> ManualOps for ManualService<A> {
     }
     async fn takeover(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError> {
         ManualService::takeover(self, req).await
+    }
+    async fn trigger_delivery(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError> {
+        ManualService::trigger_delivery(self, req).await
+    }
+    async fn confirm_shipment(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError> {
+        ManualService::confirm_shipment(self, req).await
+    }
+}
+
+impl<A: PlatformAdapter> ManualService<A> {
+    /// 人工触发交付(007 US6,FR-061):付款事实齐备才放行,走既有自动管线
+    /// (核验→唯一任务→冻结→发送→分类);T1 唯一索引天然幂等,重复触发
+    /// AlreadyHandled 不再发送。不要求风险勾选(不产生新内容),原因必填留痕。
+    pub async fn trigger_delivery(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError> {
+        Self::check_reason(&req.reason)?;
+        if !self.begin_idem(&req, "trigger_delivery").await? {
+            return Ok(ManualOutcome::IdempotentReplay);
+        }
+        let outcome = self.trigger_delivery_inner(&req).await;
+        let status = match &outcome {
+            Ok(ManualOutcome::Triggered(_)) | Ok(ManualOutcome::TriggerNoOp(_)) => "succeeded",
+            _ => "failed",
+        };
+        let _ = self
+            .idempotency
+            .complete(&req.idempotency_key, status, "{}")
+            .await;
+        outcome
+    }
+
+    async fn trigger_delivery_inner(&self, req: &ManualRequest) -> Result<ManualOutcome, ManualError> {
+        // 事实核验:人工发起不跳过核验(FR-063),缺失要素列明
+        let order_id = req.order_db_id.clone();
+        let facts = self
+            .db
+            .call(move |conn| -> rusqlite::Result<
+                Option<(String, String, String, String, Option<String>, Option<i64>, Option<i64>)>,
+            > {
+                use rusqlite::OptionalExtension as _;
+                conn.query_row(
+                    "SELECT id, account_id, external_order_id, platform_status, buyer_id,
+                            paid_at, amount_minor
+                     FROM orders WHERE id = ?1",
+                    rusqlite::params![order_id],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                            r.get(6)?,
+                        ))
+                    },
+                )
+                .optional()
+            })
+            .await??;
+        let Some((_id, account_id, external, platform_status, buyer, paid_at, amount)) = facts
+        else {
+            return Err(ManualError::OrderNotFound);
+        };
+        if account_id != req.account_id {
+            return Err(ManualError::OrderNotFound);
+        }
+        let mut missing: Vec<String> = Vec::new();
+        if paid_at.is_none() {
+            missing.push("paid_at(付款时间)".into());
+        }
+        if amount.is_none() {
+            missing.push("amount(金额)".into());
+        }
+        if buyer.is_none() {
+            missing.push("buyer_id(买家定位)".into());
+        }
+        if !missing.is_empty() {
+            return Err(ManualError::MissingFacts(missing));
+        }
+        match platform_status.as_str() {
+            "canceled" | "refunding" | "refunded" | "completed" => {
+                return Err(ManualError::RefundedOrCompleted);
+            }
+            _ => {}
+        }
+        // 审计留痕(动作级;执行互斥由交付管线内部的 order guard 自管)
+        let manual_id = ids::new_id("man");
+        let audit_order = req.order_db_id.clone();
+        let admin = req.admin_id.clone();
+        let reason = req.reason.clone();
+        self.db
+            .call(move |conn| {
+                manual_actions::insert(
+                    conn,
+                    &manual_id,
+                    &admin,
+                    &audit_order,
+                    None,
+                    "trigger_delivery",
+                    &reason,
+                    false,
+                    "",
+                )
+            })
+            .await??;
+        let out = self
+            .delivery
+            .handle_payment(&req.account_id, &external)
+            .await?;
+        Ok(match out {
+            HandleOutcome::AlreadyHandled => ManualOutcome::TriggerNoOp(Box::new(out)),
+            other => ManualOutcome::Triggered(Box::new(other)),
+        })
+    }
+
+    /// 人工确认平台已发货(007 US6,FR-062):前提内容交付 accepted;
+    /// 平台接纳→确认轴 accepted;平台拒绝/未知→仅记录人工断言,
+    /// 确认轴如实落平台结果,内容轴不受影响。
+    pub async fn confirm_shipment(&self, req: ManualRequest) -> Result<ManualOutcome, ManualError> {
+        Self::check_reason(&req.reason)?;
+        if !self.begin_idem(&req, "confirm_shipment").await? {
+            return Ok(ManualOutcome::IdempotentReplay);
+        }
+        let outcome = self.confirm_shipment_inner(&req).await;
+        let status = match &outcome {
+            Ok(_) => "succeeded",
+            _ => "failed",
+        };
+        let _ = self
+            .idempotency
+            .complete(&req.idempotency_key, status, "{}")
+            .await;
+        outcome
+    }
+
+    async fn confirm_shipment_inner(&self, req: &ManualRequest) -> Result<ManualOutcome, ManualError> {
+        struct ConfirmCtx {
+            account_id: String,
+            external_order_id: String,
+            platform_status: String,
+            delivery_id: String,
+            delivery_version: i64,
+            content_state: String,
+            proof: Option<deliveries::ProofRow>,
+        }
+        let order_id = req.order_db_id.clone();
+        let loaded = self
+            .db
+            .call(move |conn| -> rusqlite::Result<Option<ConfirmCtx>> {
+                let Some(order) = orders::get_manual_ctx(conn, &order_id)? else {
+                    return Ok(None);
+                };
+                let Some(delivery) = deliveries::find_initial(conn, &order.id)? else {
+                    return Ok(None);
+                };
+                let proof = deliveries::latest_proof_for_delivery(conn, &delivery.id)?;
+                Ok(Some(ConfirmCtx {
+                    account_id: order.account_id,
+                    external_order_id: order.external_order_id,
+                    platform_status: order.platform_status,
+                    delivery_id: delivery.id,
+                    delivery_version: delivery.version,
+                    content_state: delivery.content_state,
+                    proof,
+                }))
+            })
+            .await??;
+        let Some(ctx) = loaded else {
+            return Err(ManualError::NoDelivery);
+        };
+        if ctx.account_id != req.account_id {
+            return Err(ManualError::OrderNotFound);
+        }
+        if ctx.content_state != "accepted" {
+            return Err(ManualError::NotAllowed(format!(
+                "内容交付尚未 accepted(当前 {}),不能确认平台发货",
+                ctx.content_state
+            )));
+        }
+        match ctx.platform_status.as_str() {
+            "canceled" | "refunding" | "refunded" => {
+                return Err(ManualError::RefundedOrCompleted);
+            }
+            _ => {}
+        }
+        // 审计留痕(人工断言先行,平台结果随后落确认轴)
+        let manual_id = ids::new_id("man");
+        let audit_order = req.order_db_id.clone();
+        let admin = req.admin_id.clone();
+        let reason = req.reason.clone();
+        let delivery_for_audit = ctx.delivery_id.clone();
+        self.db
+            .call(move |conn| {
+                manual_actions::insert(
+                    conn,
+                    &manual_id,
+                    &admin,
+                    &audit_order,
+                    Some(&delivery_for_audit),
+                    "confirm_shipment",
+                    &reason,
+                    false,
+                    "",
+                )
+            })
+            .await??;
+        // 007 US6:确认动作 attempt 留痕(action_kind=manual_confirm,前提 accepted)
+        let attempt_id = ids::new_id("att");
+        let request_key = ids::new_request_key();
+        let delivery_for_attempt = ctx.delivery_id.clone();
+        let prepared = self
+            .db
+            .call(move |conn| {
+                deliveries::prepare_attempt(
+                    conn,
+                    &attempt_id,
+                    &delivery_for_attempt,
+                    "manual_confirm",
+                    &request_key,
+                    None,
+                )
+            })
+            .await??;
+        let Some(prepared_attempt) = prepared else {
+            return Err(ManualError::InFlight);
+        };
+        let attempt_id = prepared_attempt.id;
+        let epochs = {
+            let account_id = req.account_id.clone();
+            self.db
+                .call(move |conn| -> rusqlite::Result<(i64, i64)> {
+                    conn.query_row(
+                        "SELECT control_epoch, credential_epoch FROM accounts WHERE id = ?1",
+                        rusqlite::params![account_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                })
+                .await??
+        };
+        let rc = crate::application::ports::platform::RequestContext {
+            operation_id: ids::new_id("op"),
+            account_id: req.account_id.clone(),
+            credential_generation: epochs.1,
+            control_generation: epochs.0,
+            deadline_ms: utc_now_ms() + 30_000,
+        };
+        let proof = crate::application::ports::platform::SendProof {
+            request_id: ctx.proof.as_ref().map(|p| p.request_id.clone()).unwrap_or_default(),
+            platform_message_id: ctx.proof.as_ref().and_then(|p| p.platform_message_id.clone()),
+            buyer_id: ctx
+                .proof
+                .as_ref()
+                .and_then(|p| p.buyer_id.clone())
+                .unwrap_or_default(),
+            chat_id: None,
+            content_digest: ctx
+                .proof
+                .as_ref()
+                .map(|p| p.content_digest.clone())
+                .unwrap_or_default(),
+        };
+        let outcome = self
+            .delivery
+            .confirm_shipment_manual(&rc, &ctx.external_order_id, &proof)
+            .await?;
+        use crate::application::ports::platform::ConfirmOutcome as CO;
+        let (conf_state, platform_confirmed, attempt_state) = match outcome {
+            CO::Accepted => ("accepted", true, "accepted"),
+            CO::Rejected { .. } => ("rejected", false, "not_sent"),
+            CO::NotSubmitted => ("pending", false, "not_sent"),
+            CO::Unknown => ("unknown", false, "unknown"),
+        };
+        // attempt 收口(平台结果即 attempt 终态;unknown 保留人工核对语义)
+        {
+            let att = attempt_id.clone();
+            let st = attempt_state.to_string();
+            let _ = self
+                .db
+                .call(move |conn| deliveries::finish_attempt(conn, &att, &st, Some(&st), None))
+                .await;
+        }
+        let delivery_id = ctx.delivery_id.clone();
+        let version = ctx.delivery_version;
+        let conf = conf_state.to_string();
+        let updated = self
+            .db
+            .call(move |conn| {
+                deliveries::set_state(
+                    conn,
+                    &delivery_id,
+                    version,
+                    None,
+                    None,
+                    Some(&conf),
+                    None,
+                    None,
+                )
+            })
+            .await??;
+        if updated.is_none() {
+            return Err(ManualError::InFlight);
+        }
+        Ok(ManualOutcome::ConfirmShipment { platform_confirmed })
     }
 }
